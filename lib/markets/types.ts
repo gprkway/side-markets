@@ -6,6 +6,7 @@ export type Outcome = {
 export type Market = {
   id: string;
   conditionId: string;
+  eventId: string | null;
   slug: string;
   question: string;
   description: string;
@@ -16,6 +17,8 @@ export type Market = {
   volume24h: number;
   liquidity: number;
   priceChange24h: number;
+  tokenIds: string[];
+  commentCount: number;
   outcomes: Outcome[];
   source: 'polymarket';
 };

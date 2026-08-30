@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   Bot,
+  Bookmark,
   Check,
   ChevronRight,
   CircleDollarSign,
@@ -12,10 +13,15 @@ import {
   Command,
   Search,
   LoaderCircle,
+  MessageSquare,
+  Plus,
   Sparkles,
   Star,
   TrendingUp,
+  UserCheck,
+  UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,6 +44,8 @@ import {
 import type { Market } from '@/lib/markets/types';
 import type { MarketFeed } from '@/lib/markets/feed';
 import type { Holder, TraderProfile } from '@/lib/traders/types';
+import type { MarketComment } from '@/lib/comments/types';
+import type { ComposedTrader, FollowedTrader, SavedView, TransientTraderProfiles } from '@/lib/views/types';
 
 type PaperTradeDraft = {
   marketId: string;
@@ -48,6 +56,16 @@ type PaperTradeDraft = {
 };
 
 type PaperTrade = PaperTradeDraft & { id: string; createdAt: string };
+
+type CommentArgument = {
+  claim: string;
+  evidenceCommentIds: string[];
+};
+
+type CommentArguments = {
+  yes: CommentArgument[];
+  no: CommentArgument[];
+};
 
 type ModelContext = {
   registerTool: (
@@ -79,8 +97,13 @@ const shortDate = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
   timeZone: 'UTC',
 });
+const commentTime = new Intl.DateTimeFormat('en-US', {
+  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short',
+});
 
 const MARKET_CACHE_KEY = 'side.marketFeeds.v1';
+const SAVED_VIEWS_KEY = 'side.savedViews';
+const FOLLOWED_TRADERS_KEY = 'side.followedTraders';
 
 function marketCacheKey(query: string) {
   return query.trim().toLowerCase() || 'trending';
@@ -130,30 +153,49 @@ function formatMovement(change: number) {
   return `${points > 0 ? '+' : ''}${points.toFixed(1)} pts`;
 }
 
-function MarketCard({ market, onOpen }: { market: Market; onOpen: (market: Market) => void }) {
+function isSportsMarket(market: Market) {
+  const haystack = `${market.category} ${market.question}`.toLowerCase();
+  return /\b(sports?|fc|cf|afc|nba|nfl|nhl|mlb|soccer|football|tennis|cricket|league|tournament|match|game \d|vs\.?\b|championship)\b/.test(haystack);
+}
+
+function MarketCard({
+  market,
+  onOpen,
+  selected,
+  onToggleSelect,
+}: {
+  market: Market;
+  onOpen: (market: Market) => void;
+  selected: boolean;
+  onToggleSelect: (marketId: string) => void;
+}) {
   const probability = primaryProbability(market);
   return (
-    <button className="market-card" onClick={() => onOpen(market)} aria-label={`Open ${market.question}`}>
-      <div className="market-card-topline">
-        <div className="market-identity">
-          {market.image ? <img src={market.image} alt="" /> : <span className="market-fallback">S</span>}
-          <span>{market.category}</span>
+    <article className={`market-card ${selected ? 'selected' : ''}`}>
+      <button className="market-card-open" onClick={() => onOpen(market)} aria-label={`Open ${market.question}`}>
+        <div className="market-card-topline">
+          <div className="market-identity">
+            {market.image ? <img src={market.image} alt="" /> : <span className="market-fallback">S</span>}
+            <span>{market.category}</span>
+          </div>
         </div>
-        <Star className="star-icon" aria-hidden="true" />
-      </div>
-      <h2>{market.question}</h2>
-      <div className="probability-row">
-        <strong>{formatProbability(market.outcomes[0]?.probability ?? 0)}</strong>
-        <span>{market.outcomes[0]?.label ?? 'Yes'}</span>
-      </div>
-      <div className="split-track" aria-label={`${probability}% probability`}><span style={{ width: `${probability}%` }} /></div>
-      <div className="market-card-meta">
-        <span>{compactMoney.format(market.volume24h)} today</span>
-        <span className={market.priceChange24h > 0 ? 'positive' : market.priceChange24h < 0 ? 'negative' : ''}>{formatMovement(market.priceChange24h)}</span>
-        <span>{market.endDate ? shortDate.format(new Date(market.endDate)) : 'Open'}</span>
-        <ChevronRight aria-hidden="true" />
-      </div>
-    </button>
+        <h2>{market.question}</h2>
+        <div className="probability-row">
+          <strong>{formatProbability(market.outcomes[0]?.probability ?? 0)}</strong>
+          <span>{market.outcomes[0]?.label ?? 'Yes'}</span>
+        </div>
+        <div className="split-track" aria-label={`${probability}% probability`}><span style={{ width: `${probability}%` }} /></div>
+        <div className="market-card-meta">
+          <span>{compactMoney.format(market.volume24h)} today</span>
+          <span className={market.priceChange24h > 0 ? 'positive' : market.priceChange24h < 0 ? 'negative' : ''}>{formatMovement(market.priceChange24h)}</span>
+          <span>{market.endDate ? shortDate.format(new Date(market.endDate)) : 'Open'}</span>
+          <ChevronRight aria-hidden="true" />
+        </div>
+      </button>
+      <button className="selection-toggle" onClick={() => onToggleSelect(market.id)} aria-pressed={selected} aria-label={`${selected ? 'Deselect' : 'Select'} ${market.question}`}>
+        {selected ? <Check /> : <Plus />}
+      </button>
+    </article>
   );
 }
 
@@ -176,14 +218,29 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [tradeConfirmed, setTradeConfirmed] = useState(false);
   const [feedMeta, setFeedMeta] = useState({ fetchedAt: initialFeed.fetchedAt, isStale: initialFeed.isStale });
   const [freshnessText, setFreshnessText] = useState('updated just now');
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([]);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [savedViewsOpen, setSavedViewsOpen] = useState(false);
+  const [composedView, setComposedView] = useState<SavedView | null>(null);
+  const [composedProfiles, setComposedProfiles] = useState<TransientTraderProfiles>({});
+  const [followedTraders, setFollowedTraders] = useState<FollowedTrader[]>([]);
+  const [comments, setComments] = useState<MarketComment[]>([]);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [positionedCommentsOnly, setPositionedCommentsOnly] = useState(false);
+  const [commentArguments, setCommentArguments] = useState<CommentArguments | null>(null);
   useEffect(() => {
     queueMicrotask(() => {
       try {
         setWatchlist(JSON.parse(localStorage.getItem('side.watchlist') ?? '[]'));
         setPaperTrades(JSON.parse(localStorage.getItem('side.paperTrades') ?? '[]'));
+        setSavedViews(JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY) ?? '[]'));
+        setFollowedTraders(JSON.parse(localStorage.getItem(FOLLOWED_TRADERS_KEY) ?? '[]'));
       } catch {
         localStorage.removeItem('side.watchlist');
         localStorage.removeItem('side.paperTrades');
+        localStorage.removeItem(SAVED_VIEWS_KEY);
+        localStorage.removeItem(FOLLOWED_TRADERS_KEY);
       }
     });
   }, []);
@@ -205,6 +262,10 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       setSelectedMarket(null);
       setSelectedTrader(null);
       setHolders([]);
+      setComments([]);
+      setCommentsOpen(false);
+      setCommentArguments(null);
+      setComposedView(null);
       return {
         visible_market_count: payload.markets.length,
         query: cleanQuery || 'trending',
@@ -223,6 +284,10 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         setSelectedMarket(null);
         setSelectedTrader(null);
         setHolders([]);
+        setComments([]);
+        setCommentsOpen(false);
+        setCommentArguments(null);
+        setComposedView(null);
         setFeedMeta({ fetchedAt: cached.fetchedAt, isStale: true });
         setError('Live refresh is unavailable. Showing last-known real market data.');
         return { visible_market_count: cached.markets.length, query: cleanQuery || 'trending', data_status: 'cached_real_data', ui_changed: true };
@@ -266,6 +331,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     setSelectedMarket(market);
     setSelectedTrader(null);
     setHolders([]);
+    setComments([]);
+    setCommentsOpen(false);
+    setCommentArguments(null);
     return {
       market: { id: market.id, question: market.question, outcomes: market.outcomes, volume_24h: market.volume24h, liquidity: market.liquidity },
       drawer_opened: true, ui_changed: true,
@@ -327,6 +395,256 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     }
   }, []);
 
+  const toggleMarketSelection = useCallback((marketId: string) => {
+    setSelectedMarketIds((current) => current.includes(marketId)
+      ? current.filter((id) => id !== marketId)
+      : [...current, marketId]);
+  }, []);
+
+  const saveComposedView = useCallback((view: SavedView) => {
+    setComposedView(view);
+    setSavedViews((current) => {
+      const next = [view, ...current.filter((candidate) => candidate.id !== view.id)];
+      localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const toggleTraderFollow = useCallback((wallet: string, name: string, reason?: string) => {
+    const exists = followedTraders.some((trader) => trader.wallet.toLowerCase() === wallet.toLowerCase());
+    const next = exists
+      ? followedTraders.filter((trader) => trader.wallet.toLowerCase() !== wallet.toLowerCase())
+      : [...followedTraders, { wallet, name: name || `${wallet.slice(0, 8)}…${wallet.slice(-5)}`, followedAt: new Date().toISOString(), reason }];
+    setFollowedTraders(next);
+    localStorage.setItem(FOLLOWED_TRADERS_KEY, JSON.stringify(next));
+    return { wallet, followed: !exists, ui_changed: true };
+  }, [followedTraders]);
+
+  const loadComments = useCallback(async () => {
+    if (!selectedMarket?.eventId) {
+      return { error: 'This market does not expose a Polymarket event ID for comments.', ui_changed: false };
+    }
+    setCommentsLoading(true);
+    try {
+      const params = new URLSearchParams({ event: selectedMarket.eventId });
+      selectedMarket.tokenIds.forEach((token) => params.append('token', token));
+      selectedMarket.outcomes.forEach((outcome) => params.append('outcome', outcome.label));
+      const response = await fetch(`/api/comments?${params}`);
+      if (!response.ok) throw new Error('Comments request failed');
+      const payload = await response.json() as { comments: MarketComment[]; fetchedAt: string };
+      setComments(payload.comments);
+      setCommentsOpen(true);
+      setPositionedCommentsOnly(false);
+      setCommentArguments(null);
+      const holderWallets = new Set(holders.map((holder) => holder.wallet.toLowerCase()));
+      return {
+        market_id: selectedMarket.id,
+        comment_count: payload.comments.length,
+        comments: payload.comments.slice(0, 16).map((comment) => ({
+          id: comment.id,
+          text: comment.body.slice(0, 600),
+          timestamp: comment.createdAt,
+          author: comment.author.name || comment.author.pseudonym || comment.author.wallet,
+          author_wallet: comment.author.wallet || null,
+          reply_to: comment.parentCommentId,
+          reactions: comment.reactionCount,
+          positioned_side: comment.position?.side ?? null,
+          matched_visible_holder: Boolean(comment.author.wallet && holderWallets.has(comment.author.wallet.toLowerCase())),
+        })),
+        identity_note: 'A positioned side is included only when Polymarket returned an outcome-token match. Holder matching uses exact proxy-wallet equality.',
+        ui_changed: true,
+      };
+    } catch {
+      return { error: 'Could not load real Polymarket comments for this market.', ui_changed: false };
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, [holders, selectedMarket]);
+
+  const composeMarketView = useCallback(async (input: Record<string, unknown>) => {
+    setLoading(true);
+    setError('');
+    try {
+      const searchQuery = typeof input.query === 'string' ? input.query.trim() : '';
+      const response = await fetch(`/api/markets?q=${encodeURIComponent(searchQuery)}`);
+      if (!response.ok) throw new Error('Composition search failed');
+      const feed = await response.json() as MarketFeed;
+      const minimumVolume = Math.max(0, Number(input.min_volume_24h) || 0);
+      const excludeSports = input.exclude_sports === true;
+      const useSelected = input.use_selected_markets === true && selectedMarketIds.length > 0;
+      const limit = Math.max(1, Math.min(18, Number(input.limit) || 8));
+      const sort = input.sort === 'movement' ? 'movement' : 'volume';
+      let candidates = feed.markets.filter((market) => market.volume24h >= minimumVolume);
+      if (excludeSports) candidates = candidates.filter((market) => !isSportsMarket(market));
+      if (useSelected) candidates = candidates.filter((market) => selectedMarketIds.includes(market.id));
+      candidates = [...candidates]
+        .sort(sort === 'movement'
+          ? (a, b) => Math.abs(b.priceChange24h) - Math.abs(a.priceChange24h)
+          : (a, b) => b.volume24h - a.volume24h)
+        .slice(0, limit);
+
+      const composedTraders: ComposedTrader[] = [];
+      if (input.include_traders === true && candidates.length) {
+        const holderResponses = await Promise.all(candidates.slice(0, 3).map(async (market) => {
+          const holderResponse = await fetch(`/api/traders?market=${encodeURIComponent(market.conditionId)}`);
+          if (!holderResponse.ok) return { market, holders: [] as Holder[] };
+          const payload = await holderResponse.json() as { holders: Holder[] };
+          return { market, holders: payload.holders };
+        }));
+        const seen = new Set<string>();
+        holderResponses.forEach(({ market, holders: marketHolders }) => {
+          marketHolders.slice(0, 2).forEach((holder, index) => {
+            if (seen.has(holder.wallet.toLowerCase())) return;
+            seen.add(holder.wallet.toLowerCase());
+            const side = market.outcomes[holder.outcomeIndex]?.label ?? `Outcome ${holder.outcomeIndex + 1}`;
+            composedTraders.push({
+              wallet: holder.wallet,
+              name: holder.name || holder.pseudonym || `${holder.wallet.slice(0, 8)}…${holder.wallet.slice(-5)}`,
+              reason: `${index === 0 ? 'Largest' : 'Notable'} visible ${side} holder in “${market.question}”`,
+              marketId: market.id,
+            });
+          });
+        });
+      }
+
+      const now = new Date().toISOString();
+      const viewId = crypto.randomUUID();
+      const title = typeof input.title === 'string' && input.title.trim()
+        ? input.title.trim()
+        : searchQuery ? `${searchQuery} research` : 'Consequential movers today';
+      const view: SavedView = {
+        id: viewId,
+        title,
+        intent: typeof input.intent === 'string' ? input.intent : searchQuery,
+        timeframe: typeof input.timeframe === 'string' ? input.timeframe : 'today',
+        createdAt: now,
+        updatedAt: now,
+        marketIds: candidates.map((market) => market.id),
+        traders: composedTraders.slice(0, 6),
+        sections: [
+          ...(candidates.length ? [{ id: `${viewId}-markets`, type: 'markets' as const, title: sort === 'movement' ? 'Top movers' : 'Most active', marketIds: candidates.map((market) => market.id) }] : []),
+          ...(composedTraders.length ? [{ id: `${viewId}-traders`, type: 'traders' as const, title: 'Notable traders', traderWallets: composedTraders.slice(0, 6).map((trader) => trader.wallet) }] : []),
+        ],
+        sort,
+        selectedMarketIds: useSelected ? [...selectedMarketIds] : [],
+      };
+      setMarkets(feed.markets);
+      setFeedMeta({ fetchedAt: feed.fetchedAt, isStale: feed.isStale });
+      setActiveQuery(searchQuery);
+      setSelectedMarket(null);
+      setSelectedTrader(null);
+      setHolders([]);
+      setComposedProfiles({});
+      saveComposedView(view);
+      return { viewId, title, marketCount: candidates.length, traderCount: view.traders.length, saved: true, ui_changed: true };
+    } catch {
+      setError('Could not assemble this live research view.');
+      return { error: 'Live composition failed.', ui_changed: false };
+    } finally {
+      setLoading(false);
+    }
+  }, [saveComposedView, selectedMarketIds]);
+
+  const updateMarketView = useCallback((input: Record<string, unknown>) => {
+    if (!composedView) return { error: 'No composed research view is currently open.', ui_changed: false };
+    const removeIds = Array.isArray(input.remove_market_ids) ? input.remove_market_ids.map(String) : [];
+    const keepIds = Array.isArray(input.keep_market_ids) ? input.keep_market_ids.map(String) : [];
+    let marketIds = [...composedView.marketIds];
+    if (input.remove_sports === true) marketIds = marketIds.filter((id) => {
+      const market = markets.find((candidate) => candidate.id === id);
+      return market ? !isSportsMarket(market) : false;
+    });
+    if (removeIds.length) marketIds = marketIds.filter((id) => !removeIds.includes(id));
+    if (keepIds.length) marketIds = marketIds.filter((id) => keepIds.includes(id));
+    if (input.keep_selected === true && selectedMarketIds.length) marketIds = marketIds.filter((id) => selectedMarketIds.includes(id));
+    if (input.add_selected === true) marketIds = [...new Set([...marketIds, ...selectedMarketIds])];
+    const updated: SavedView = {
+      ...composedView,
+      title: typeof input.title === 'string' && input.title.trim() ? input.title.trim() : composedView.title,
+      updatedAt: new Date().toISOString(),
+      marketIds,
+      selectedMarketIds: [...selectedMarketIds],
+      sections: composedView.sections
+        .map((section) => section.type === 'markets' || section.type === 'related_markets' ? { ...section, marketIds } : section)
+        .filter((section) => section.type !== 'markets' && section.type !== 'related_markets' || Boolean(section.marketIds?.length)),
+    };
+    saveComposedView(updated);
+    return { viewId: updated.id, title: updated.title, marketCount: marketIds.length, saved: true, ui_changed: true };
+  }, [composedView, markets, saveComposedView, selectedMarketIds]);
+
+  const composeFollowedTraderView = useCallback(async () => {
+    if (!followedTraders.length) return { error: 'No traders are followed on this device.', ui_changed: false };
+    setLoading(true);
+    try {
+      const results = await Promise.all(followedTraders.slice(0, 6).map(async (followed) => {
+        const response = await fetch(`/api/traders?wallet=${encodeURIComponent(followed.wallet)}`);
+        if (!response.ok) return null;
+        return (await response.json() as { trader: TraderProfile }).trader;
+      }));
+      const profiles = results.filter(Boolean) as TraderProfile[];
+      const profileMap = Object.fromEntries(profiles.map((profile) => [profile.wallet, profile]));
+      setComposedProfiles(profileMap);
+      const now = new Date().toISOString();
+      const viewId = crypto.randomUUID();
+      const traders = followedTraders.slice(0, 6).map((trader) => ({ wallet: trader.wallet, name: trader.name, reason: trader.reason || 'Followed on this device' }));
+      const view: SavedView = {
+        id: viewId,
+        title: 'Followed trader positions',
+        intent: 'Current real positions held by traders followed on this device.',
+        timeframe: 'current',
+        createdAt: now,
+        updatedAt: now,
+        marketIds: [],
+        traders,
+        sections: [{ id: `${viewId}-positions`, type: 'trader_positions', title: 'Current positions', traderWallets: traders.map((trader) => trader.wallet) }],
+        sort: 'value',
+        selectedMarketIds: [],
+      };
+      setComposedView(view);
+      setSavedViews((current) => {
+        const next = [view, ...current.filter((candidate) => candidate.id !== view.id)];
+        localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+        return next;
+      });
+      return { viewId, title: view.title, traderCount: profiles.length, positionCount: profiles.reduce((sum, profile) => sum + profile.positions.length, 0), saved: true, ui_changed: true };
+    } finally {
+      setLoading(false);
+    }
+  }, [followedTraders]);
+
+  const openSavedView = useCallback(async (view: SavedView) => {
+    setComposedView(view);
+    setSelectedMarketIds(view.selectedMarketIds);
+    setSavedViewsOpen(false);
+    const needsProfiles = view.sections.some((section) => section.type === 'trader_positions');
+    if (!needsProfiles) {
+      setComposedProfiles({});
+      return;
+    }
+    const results = await Promise.all(view.traders.map(async (trader) => {
+      const response = await fetch(`/api/traders?wallet=${encodeURIComponent(trader.wallet)}`);
+      if (!response.ok) return null;
+      return (await response.json() as { trader: TraderProfile }).trader;
+    }));
+    setComposedProfiles(Object.fromEntries(results.filter(Boolean).map((profile) => [(profile as TraderProfile).wallet, profile as TraderProfile])));
+  }, []);
+
+  const renderCommentArguments = useCallback((input: Record<string, unknown>) => {
+    const normalize = (value: unknown): CommentArgument[] => Array.isArray(value)
+      ? value.map((item) => {
+        const record = item as Record<string, unknown>;
+        return {
+          claim: typeof record.claim === 'string' ? record.claim.slice(0, 280) : '',
+          evidenceCommentIds: Array.isArray(record.evidence_comment_ids) ? record.evidence_comment_ids.map(String).slice(0, 8) : [],
+        };
+      }).filter((argument) => argument.claim && argument.evidenceCommentIds.some((id) => comments.some((comment) => comment.id === id)))
+      : [];
+    const next = { yes: normalize(input.yes_arguments), no: normalize(input.no_arguments) };
+    setCommentArguments(next);
+    setCommentsOpen(true);
+    return { yesArgumentCount: next.yes.length, noArgumentCount: next.no.length, evidencePreserved: true, ui_changed: true };
+  }, [comments]);
+
   const toggleWatchlist = useCallback((marketId: string) => {
     const next = watchlist.includes(marketId)
       ? watchlist.filter((id) => id !== marketId)
@@ -379,6 +697,28 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
     void modelContext.registerTool({
+      name: 'compose_market_view', title: 'Compose and save a live research view',
+      description: 'Turn live Polymarket results or the markets manually selected in Side into a saved, purpose-built research workspace. Can exclude sports and include factual notable-holder cards.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          intent: { type: 'string', description: 'Short summary of what the human is trying to investigate.' },
+          timeframe: { type: 'string', description: 'For example: today, this week, or current.' },
+          query: { type: 'string', description: 'Optional Polymarket search topic. Leave empty to use the high-volume live feed.' },
+          exclude_sports: { type: 'boolean' },
+          min_volume_24h: { type: 'number', minimum: 0 },
+          limit: { type: 'number', minimum: 1, maximum: 18 },
+          sort: { type: 'string', enum: ['volume', 'movement'] },
+          include_traders: { type: 'boolean', description: 'Add notable holders from the top visible markets with factual reasons.' },
+          use_selected_markets: { type: 'boolean', description: 'Build around the markets the human manually selected in Side.' },
+        },
+        required: ['title', 'intent'], additionalProperties: false,
+      },
+      execute: (input) => composeMarketView(input),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    void modelContext.registerTool({
       name: 'open_market', title: 'Open a visible market',
       description: 'Open the large market detail drawer for a market currently visible in Side.',
       inputSchema: {
@@ -389,7 +729,61 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
     return () => controller.abort();
-  }, [openMarketById, runSearch]);
+  }, [composeMarketView, openMarketById, runSearch]);
+
+  useEffect(() => {
+    const modelContext = document.modelContext ?? navigator.modelContext;
+    if (!composedView || !modelContext?.registerTool) return;
+    const controller = new AbortController();
+    void modelContext.registerTool({
+      name: 'get_current_workspace_context',
+      title: 'Inspect the current shared research workspace',
+      description: 'Return the saved view, visible objects, and the market IDs manually selected by the human. Use this to resolve references such as this, these, selected, or current view.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: () => ({
+        view: composedView,
+        selected_market_ids: selectedMarketIds,
+        selected_markets: selectedMarketIds.map((id) => markets.find((market) => market.id === id)).filter(Boolean),
+        ui_changed: false,
+      }),
+      annotations: { readOnlyHint: true },
+    }, { signal: controller.signal });
+    void modelContext.registerTool({
+      name: 'update_market_view',
+      title: 'Refine the current saved research view',
+      description: 'Mutate the currently visible composed view in place while preserving its identity and explicit human selections.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          remove_sports: { type: 'boolean' },
+          remove_market_ids: { type: 'array', items: { type: 'string', enum: composedView.marketIds } },
+          keep_market_ids: { type: 'array', items: { type: 'string', enum: composedView.marketIds } },
+          keep_selected: { type: 'boolean', description: 'Keep only markets manually selected by the human.' },
+          add_selected: { type: 'boolean', description: 'Add the human’s current manual selections.' },
+        },
+        additionalProperties: false,
+      },
+      execute: (input) => updateMarketView(input),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    return () => controller.abort();
+  }, [composedView, markets, selectedMarketIds, updateMarketView]);
+
+  useEffect(() => {
+    const modelContext = document.modelContext ?? navigator.modelContext;
+    if (!followedTraders.length || !modelContext?.registerTool) return;
+    const controller = new AbortController();
+    void modelContext.registerTool({
+      name: 'compose_followed_trader_view',
+      title: 'Show followed traders’ current positions',
+      description: 'Build and save a visible research page from the real current Polymarket positions of traders followed on this device.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: () => composeFollowedTraderView(),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    return () => controller.abort();
+  }, [composeFollowedTraderView, followedTraders.length]);
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
@@ -412,6 +806,14 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       description: 'Load and visibly reveal notable holders on both sides of the market currently open in Side.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       execute: () => loadHolders(),
+      annotations: { readOnlyHint: false },
+    });
+    if (selectedMarket.eventId) void register({
+      name: 'inspect_market_comments',
+      title: 'Inspect the current market discussion',
+      description: 'Load real Polymarket comments for the current market into its drawer, including exact author-wallet and outcome-token matches when available.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: () => loadComments(),
       annotations: { readOnlyHint: false },
     });
     void register({
@@ -438,7 +840,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       annotations: { readOnlyHint: false },
     });
     return () => controller.abort();
-  }, [loadHolders, preparePaperTrade, selectedMarket, toggleWatchlist]);
+  }, [loadComments, loadHolders, preparePaperTrade, selectedMarket, toggleWatchlist]);
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
@@ -458,8 +860,40 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       execute: ({ wallet }) => openTrader(typeof wallet === 'string' ? wallet : ''),
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
+    void modelContext.registerTool({
+      name: 'follow_visible_traders',
+      title: 'Follow or unfollow visible market holders',
+      description: 'Persist local follow state for one or more traders currently visible in the open market. This never copies or executes trades.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          wallets: { type: 'array', minItems: 1, items: { type: 'string', enum: holders.map((holder) => holder.wallet) } },
+          action: { type: 'string', enum: ['follow', 'unfollow'] },
+        },
+        required: ['wallets', 'action'], additionalProperties: false,
+      },
+      execute: ({ wallets, action }) => {
+        const requested = Array.isArray(wallets) ? wallets.map(String) : [];
+        const valid = holders.filter((holder) => requested.includes(holder.wallet));
+        let next = [...followedTraders];
+        valid.forEach((holder) => {
+          const exists = next.some((trader) => trader.wallet.toLowerCase() === holder.wallet.toLowerCase());
+          if (action === 'follow' && !exists) next.push({
+            wallet: holder.wallet,
+            name: holder.name || holder.pseudonym || `${holder.wallet.slice(0, 8)}…${holder.wallet.slice(-5)}`,
+            followedAt: new Date().toISOString(),
+            reason: selectedMarket ? `Visible holder in “${selectedMarket.question}”` : 'Visible market holder',
+          });
+          if (action === 'unfollow' && exists) next = next.filter((trader) => trader.wallet.toLowerCase() !== holder.wallet.toLowerCase());
+        });
+        setFollowedTraders(next);
+        localStorage.setItem(FOLLOWED_TRADERS_KEY, JSON.stringify(next));
+        return { action, changed: valid.length, followed_trader_count: next.length, ui_changed: true };
+      },
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
     return () => controller.abort();
-  }, [holders, openTrader]);
+  }, [followedTraders, holders, openTrader, selectedMarket]);
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
@@ -473,12 +907,69 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       execute: () => ({ ...selectedTrader, ui_changed: false }),
       annotations: { readOnlyHint: true },
     }, { signal: controller.signal });
+    void modelContext.registerTool({
+      name: 'set_current_trader_follow',
+      title: 'Follow or unfollow the current trader',
+      description: 'Persist follow state for the trader currently open in Side. Following surfaces research; it never enables copy trading.',
+      inputSchema: {
+        type: 'object', properties: { action: { type: 'string', enum: ['follow', 'unfollow'] } }, required: ['action'], additionalProperties: false,
+      },
+      execute: ({ action }) => {
+        const isFollowed = followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase());
+        if ((action === 'follow' && isFollowed) || (action === 'unfollow' && !isFollowed)) return { wallet: selectedTrader.wallet, followed: isFollowed, ui_changed: false };
+        return toggleTraderFollow(selectedTrader.wallet, selectedTrader.name || selectedTrader.pseudonym, 'Followed from trader intelligence');
+      },
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
     return () => controller.abort();
-  }, [selectedTrader]);
+  }, [followedTraders, selectedTrader, toggleTraderFollow]);
+
+  useEffect(() => {
+    const modelContext = document.modelContext ?? navigator.modelContext;
+    if (!comments.length || !modelContext?.registerTool) return;
+    const controller = new AbortController();
+    void modelContext.registerTool({
+      name: 'filter_market_comments',
+      title: 'Filter the visible market discussion',
+      description: 'Show all real comments or only comments with an exact Polymarket outcome-token match for the current event.',
+      inputSchema: {
+        type: 'object', properties: { positioned_only: { type: 'boolean' } }, required: ['positioned_only'], additionalProperties: false,
+      },
+      execute: ({ positioned_only }) => {
+        const only = positioned_only === true;
+        setPositionedCommentsOnly(only);
+        setCommentsOpen(true);
+        return { positioned_only: only, visible_comment_count: only ? comments.filter((comment) => comment.position).length : comments.length, ui_changed: true };
+      },
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    void modelContext.registerTool({
+      name: 'render_market_arguments',
+      title: 'Render evidence-backed YES and NO arguments',
+      description: 'Render Codex’s argument extraction inside Side while preserving references to the original real Polymarket comment IDs. Claims without valid evidence IDs are dropped.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          yes_arguments: { type: 'array', items: { type: 'object', properties: { claim: { type: 'string' }, evidence_comment_ids: { type: 'array', items: { type: 'string', enum: comments.map((comment) => comment.id) } } }, required: ['claim', 'evidence_comment_ids'], additionalProperties: false } },
+          no_arguments: { type: 'array', items: { type: 'object', properties: { claim: { type: 'string' }, evidence_comment_ids: { type: 'array', items: { type: 'string', enum: comments.map((comment) => comment.id) } } }, required: ['claim', 'evidence_comment_ids'], additionalProperties: false } },
+        },
+        required: ['yes_arguments', 'no_arguments'], additionalProperties: false,
+      },
+      execute: (input) => renderCommentArguments(input),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    return () => controller.abort();
+  }, [comments, renderCommentArguments]);
 
   const visibleMarkets = useMemo(
-    () => watchlistOnly ? markets.filter((market) => watchlist.includes(market.id)) : markets,
-    [markets, watchlist, watchlistOnly],
+    () => composedView
+      ? markets.filter((market) => composedView.marketIds.includes(market.id))
+      : watchlistOnly ? markets.filter((market) => watchlist.includes(market.id)) : markets,
+    [composedView, markets, watchlist, watchlistOnly],
+  );
+  const visibleComments = useMemo(
+    () => positionedCommentsOnly ? comments.filter((comment) => comment.position) : comments,
+    [comments, positionedCommentsOnly],
   );
   const totalVolume = useMemo(() => visibleMarkets.reduce((sum, market) => sum + market.volume24h, 0), [visibleMarkets]);
   function submitSearch(event: { preventDefault: () => void }) { event.preventDefault(); void runSearch(query); }
@@ -495,6 +986,12 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
           <kbd><Command /> K</kbd>
         </form>
         <nav className="header-actions" aria-label="Primary">
+          <Button variant={savedViewsOpen ? 'secondary' : 'ghost'} onClick={() => setSavedViewsOpen((current) => !current)}>
+            <Bookmark /> Views <span className="nav-count">{savedViews.length}</span>
+          </Button>
+          <Button variant="ghost" onClick={() => void composeFollowedTraderView()} disabled={!followedTraders.length}>
+            <UserCheck /> Followed <span className="nav-count">{followedTraders.length}</span>
+          </Button>
           <Button variant={watchlistOnly ? 'secondary' : 'ghost'} onClick={() => setWatchlistOnly((current) => !current)}>
             <Star /> Watchlist <span className="nav-count">{watchlist.length}</span>
           </Button>
@@ -503,14 +1000,25 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       </header>
 
       <section className="market-surface" id="top">
+        {savedViewsOpen && (
+          <div className="saved-views-panel">
+            <div className="saved-views-heading"><span>SAVED RESEARCH VIEWS</span><button onClick={() => setSavedViewsOpen(false)} aria-label="Close saved views"><X /></button></div>
+            {savedViews.length ? savedViews.map((view) => (
+              <button key={view.id} onClick={() => void openSavedView(view)}>
+                <span><strong>{view.title}</strong><small>{view.marketIds.length} markets · {view.traders.length} traders</small></span>
+                <ChevronRight />
+              </button>
+            )) : <p>No saved views yet. Ask your agent to compose one.</p>}
+          </div>
+        )}
         <div className="eyebrow-row">
           <div className={`live-label ${feedMeta.isStale ? 'cached' : ''}`}><span /> {feedMeta.isStale ? 'CACHED REAL DATA' : 'LIVE MARKET INTELLIGENCE'} <small>{freshnessText}</small></div>
           <div className={`agent-status ${agentConnected ? 'connected' : ''}`}><Bot /> {agentConnected ? 'AGENT CONNECTED' : 'BROWSER MODE'}</div>
         </div>
         <div className="title-row">
           <div>
-            <h1>{watchlistOnly ? 'Your watchlist' : activeQuery ? `Markets for “${activeQuery}”` : 'Markets moving now'}</h1>
-            <p>{watchlistOnly ? 'Device-local markets you want to keep close.' : activeQuery ? 'Live matches, ranked by activity.' : 'High-signal markets ranked by 24-hour volume.'}</p>
+            <h1>{composedView ? composedView.title : watchlistOnly ? 'Your watchlist' : activeQuery ? `Markets for “${activeQuery}”` : 'Markets moving now'}</h1>
+            <p>{composedView ? composedView.intent : watchlistOnly ? 'Device-local markets you want to keep close.' : activeQuery ? 'Live matches, ranked by activity.' : 'High-signal markets ranked by 24-hour volume.'}</p>
           </div>
           <div className="feed-stat"><span>{compactMoney.format(totalVolume)}</span> visible volume</div>
         </div>
@@ -522,16 +1030,54 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
           ))}
           <div className="agent-nudge"><Sparkles /> Try asking your agent: “Find AI markets”</div>
         </div>
+        {composedView && <div className="composed-status"><Bookmark /> Saved automatically <span>·</span> Updated {shortDate.format(new Date(composedView.updatedAt))}</div>}
+        {selectedMarketIds.length > 0 && (
+          <div className="selection-bar"><span>{selectedMarketIds.length} selected</span><small>Ask your agent to “build around these.”</small><button onClick={() => setSelectedMarketIds([])}>Clear</button></div>
+        )}
         {error && <div className="error-banner" role="alert">{error}</div>}
-        <div className={`market-grid ${loading ? 'is-loading' : ''}`} aria-busy={loading}>
-          {visibleMarkets.map((market) => <MarketCard key={market.id} market={market} onOpen={(nextMarket) => { setSelectedMarket(nextMarket); setSelectedTrader(null); setHolders([]); }} />)}
-        </div>
-        {!loading && visibleMarkets.length === 0 && (
+        {(!composedView || visibleMarkets.length > 0) && (
+          <section className={composedView ? 'composed-section' : undefined}>
+            {composedView && <div className="composed-section-heading"><span>{composedView.sections.find((section) => section.type === 'markets')?.title ?? 'Markets'}</span><small>{visibleMarkets.length} LIVE</small></div>}
+            <div className={`market-grid ${loading ? 'is-loading' : ''}`} aria-busy={loading}>
+              {visibleMarkets.map((market) => <MarketCard key={market.id} market={market} selected={selectedMarketIds.includes(market.id)} onToggleSelect={toggleMarketSelection} onOpen={(nextMarket) => { setSelectedMarket(nextMarket); setSelectedTrader(null); setHolders([]); setComments([]); setCommentsOpen(false); setCommentArguments(null); }} />)}
+            </div>
+          </section>
+        )}
+        {composedView?.traders.length ? (
+          <section className="composed-section trader-composition">
+            <div className="composed-section-heading"><span>{composedView.sections.find((section) => section.type === 'traders')?.title ?? 'Notable traders'}</span><small>FACTUAL SIGNALS</small></div>
+            <div className="composed-trader-grid">
+              {composedView.traders.map((trader) => {
+                const isFollowed = followedTraders.some((followed) => followed.wallet.toLowerCase() === trader.wallet.toLowerCase());
+                return <article key={trader.wallet}>
+                  <button className="composed-trader-main" onClick={() => void openTrader(trader.wallet)}>
+                    <span className="holder-avatar">{trader.name.slice(0, 1).toUpperCase()}</span>
+                    <span><strong>{trader.name}</strong><small>{trader.reason}</small></span><ChevronRight />
+                  </button>
+                  <button className="follow-mini" onClick={() => toggleTraderFollow(trader.wallet, trader.name, trader.reason)}>{isFollowed ? <UserCheck /> : <UserPlus />}{isFollowed ? 'Following' : 'Follow'}</button>
+                </article>;
+              })}
+            </div>
+          </section>
+        ) : null}
+        {composedView?.sections.some((section) => section.type === 'trader_positions') && (
+          <section className="composed-section followed-positions">
+            <div className="composed-section-heading"><span>Current positions</span><small>NON-REDEEMABLE · LIVE</small></div>
+            {composedView.traders.map((trader) => {
+              const profile = composedProfiles[trader.wallet];
+              return <article className="followed-profile" key={trader.wallet}>
+                <div className="followed-profile-heading"><button onClick={() => void openTrader(trader.wallet)}><strong>{trader.name}</strong><small>{trader.reason}</small></button><span>{profile ? compactMoney.format(profile.visibleOpenValue) : 'Unavailable'}</span></div>
+                {profile?.positions.slice(0, 6).map((position) => <div className="followed-position" key={`${position.conditionId}-${position.outcome}`}><span><strong>{position.title}</strong><small>{position.outcome} · {formatCents(position.currentPrice)}</small></span><b>{compactMoney.format(position.currentValue)}</b></div>)}
+              </article>;
+            })}
+          </section>
+        )}
+        {!loading && visibleMarkets.length === 0 && !composedView?.sections.some((section) => section.type === 'trader_positions') && (
           <div className="empty-state"><Search /><h2>{watchlistOnly ? 'Your watchlist is empty' : 'No live markets found'}</h2><p>{watchlistOnly ? 'Open a market and save it from the detail drawer.' : 'Try a broader topic, like politics, crypto, or sports.'}</p><Button onClick={() => watchlistOnly ? setWatchlistOnly(false) : void runSearch('')}>{watchlistOnly ? 'Browse markets' : 'Back to trending'}</Button></div>
         )}
       </section>
 
-      <Sheet open={Boolean(selectedMarket)} onOpenChange={(open) => { if (!open) { setSelectedMarket(null); setSelectedTrader(null); setHolders([]); } }}>
+      <Sheet open={Boolean(selectedMarket || selectedTrader)} onOpenChange={(open) => { if (!open) { setSelectedMarket(null); setSelectedTrader(null); setHolders([]); setComments([]); setCommentsOpen(false); setCommentArguments(null); } }}>
         <SheetContent className="market-drawer sm:max-w-[760px]" showCloseButton>
           {selectedMarket && !selectedTrader && (
             <>
@@ -566,6 +1112,47 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                   <span className="trader-icon">{holdersLoading ? <LoaderCircle className="spin" /> : <Users />}</span>
                   <span><strong>See who’s in this trade</strong><small>Notable holders and their other positions</small></span><ArrowUpRight />
                 </button>
+                {selectedMarket.eventId && (
+                  <button className="trader-preview discussion-preview" onClick={() => void loadComments()} disabled={commentsLoading}>
+                    <span className="trader-icon">{commentsLoading ? <LoaderCircle className="spin" /> : <MessageSquare />}</span>
+                    <span><strong>Read market discussion</strong><small>Real Polymarket comments with position-aware evidence</small></span><ArrowUpRight />
+                  </button>
+                )}
+                {commentsOpen && (
+                  <section className="comments-section">
+                    <div className="section-label"><span>MARKET DISCUSSION</span><span>{visibleComments.length} SHOWN</span></div>
+                    <div className="comment-filter-row">
+                      <button className={!positionedCommentsOnly ? 'active' : ''} onClick={() => setPositionedCommentsOnly(false)}>All comments</button>
+                      <button className={positionedCommentsOnly ? 'active' : ''} onClick={() => setPositionedCommentsOnly(true)}>Position matched</button>
+                    </div>
+                    {commentArguments && (commentArguments.yes.length > 0 || commentArguments.no.length > 0) && (
+                      <div className="argument-grid">
+                        {(['yes', 'no'] as const).map((side) => commentArguments[side].length > 0 && <div className={`argument-column ${side}`} key={side}>
+                          <div className="argument-heading">{side.toUpperCase()} CASE</div>
+                          {commentArguments[side].map((argument, index) => <article key={`${side}-${index}`}>
+                            <strong>{argument.claim}</strong>
+                            <small>{argument.evidenceCommentIds.length} cited comment{argument.evidenceCommentIds.length === 1 ? '' : 's'}</small>
+                            <div className="argument-evidence">{argument.evidenceCommentIds.map((id) => {
+                              const evidence = comments.find((comment) => comment.id === id);
+                              return evidence ? <blockquote key={id}>“{evidence.body.slice(0, 180)}{evidence.body.length > 180 ? '…' : ''}” <span>#{id}</span></blockquote> : null;
+                            })}</div>
+                          </article>)}
+                        </div>)}
+                      </div>
+                    )}
+                    <div className="comment-list">
+                      {visibleComments.map((comment) => {
+                        const matchedHolder = Boolean(comment.author.wallet && holders.some((holder) => holder.wallet.toLowerCase() === comment.author.wallet.toLowerCase()));
+                        return <article className={comment.parentCommentId ? 'reply' : ''} key={comment.id}>
+                          <div className="comment-meta"><span className="holder-avatar">{(comment.author.name || comment.author.pseudonym || '0').slice(0, 1).toUpperCase()}</span><span><strong>{comment.author.name || comment.author.pseudonym || `${comment.author.wallet.slice(0, 8)}…`}</strong><small>{comment.createdAt ? commentTime.format(new Date(comment.createdAt)) : 'Time unavailable'}</small></span><span className="comment-badges">{comment.position && <b>{comment.position.side} POSITION</b>}{matchedHolder && <b>VISIBLE HOLDER</b>}</span></div>
+                          <p>{comment.body}</p>
+                          <div className="comment-foot"><span>#{comment.id}</span>{comment.reactionCount > 0 && <span>{comment.reactionCount} reactions</span>}{comment.parentCommentId && <span>reply to #{comment.parentCommentId}</span>}</div>
+                        </article>;
+                      })}
+                    </div>
+                    {!visibleComments.length && <div className="position-empty">No comments match this evidence filter.</div>}
+                  </section>
+                )}
                 {holders.length > 0 && (
                   <section className="holders-section">
                     <div className="section-label"><span>NOTABLE HOLDERS</span><span>{holders.length} FOUND</span></div>
@@ -597,6 +1184,10 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                     <SheetDescription>{selectedTrader.bio || `${selectedTrader.wallet.slice(0, 12)}…${selectedTrader.wallet.slice(-8)}`}</SheetDescription>
                   </div>
                 </div>
+                <Button className="watch-market-button" variant={followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()) ? 'secondary' : 'outline'} onClick={() => toggleTraderFollow(selectedTrader.wallet, selectedTrader.name || selectedTrader.pseudonym, 'Followed from trader intelligence')}>
+                  {followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()) ? <UserCheck /> : <UserPlus />}
+                  {followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()) ? 'Following' : 'Follow trader'}
+                </Button>
               </SheetHeader>
               <div className="drawer-body trader-body">
                 <div className="trader-stats">

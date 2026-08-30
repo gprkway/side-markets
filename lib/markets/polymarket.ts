@@ -13,6 +13,9 @@ type RawMarket = Record<string, unknown> & {
   image?: string;
   icon?: string;
   endDate?: string;
+  clobTokenIds?: string;
+  commentCount?: number;
+  events?: RawEvent[];
   outcomes?: string;
   outcomePrices?: string;
   volume?: string | number;
@@ -24,8 +27,10 @@ type RawMarket = Record<string, unknown> & {
 };
 
 type RawEvent = {
+  id?: string;
   title?: string;
   category?: string;
+  commentCount?: number;
   markets?: RawMarket[];
 };
 
@@ -57,6 +62,7 @@ function normalizeMarket(raw: RawMarket, event?: RawEvent): Market | null {
   return {
     id: raw.id,
     conditionId: raw.conditionId,
+    eventId: event?.id ?? raw.events?.[0]?.id ?? null,
     slug: raw.slug ?? '',
     question: raw.question ?? raw.title ?? event?.title ?? 'Untitled market',
     description: raw.description ?? '',
@@ -67,6 +73,8 @@ function normalizeMarket(raw: RawMarket, event?: RawEvent): Market | null {
     volume24h: numeric(raw.volume24hr),
     liquidity: numeric(raw.liquidityNum ?? raw.liquidity),
     priceChange24h: numeric(raw.oneDayPriceChange),
+    tokenIds: parseList(raw.clobTokenIds),
+    commentCount: numeric(event?.commentCount ?? raw.commentCount),
     outcomes,
     source: 'polymarket',
   };
