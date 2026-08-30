@@ -154,8 +154,8 @@ function formatMovement(change: number) {
 }
 
 function isSportsMarket(market: Market) {
-  const haystack = `${market.category} ${market.question}`.toLowerCase();
-  return /\b(sports?|fc|cf|afc|nba|nfl|nhl|mlb|soccer|football|tennis|cricket|league|tournament|match|game \d|vs\.?\b|championship)\b/.test(haystack);
+  const haystack = `${market.category} ${market.question} ${market.description}`.toLowerCase();
+  return /\b(sports?|fc|cf|afc|nba|nfl|nhl|mlb|soccer|football|tennis|cricket|league|tournament|match|game \d|vs\.?\b|championship|upcoming game|match statistics|regular play|stoppage time|governing body or event organizers)\b/.test(haystack);
 }
 
 function MarketCard({
