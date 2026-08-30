@@ -19,6 +19,7 @@ Side is a WebMCP-native prediction-market browser designed for a human and their
 - Evidence-backed YES/NO argument rendering that preserves original comment IDs
 - Human-confirmed paper-trade preparation; no real execution
 - Context-sensitive WebMCP tools for discovery, markets, traders, watchlists, and paper trades
+- Restrained, reduced-motion-aware transitions and an ephemeral agent-action cue for every mutating Site Tool
 - Responsive dark trading interface
 
 ## WebMCP tools
