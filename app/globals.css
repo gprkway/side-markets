@@ -51,6 +51,9 @@ button, input { font: inherit; } button { color: inherit; }
 .eyebrow-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
 .live-label, .agent-status { display: flex; align-items: center; gap: 7px; font: 600 10px/1 var(--font-geist-mono); letter-spacing: .1em; color: #68747c; }
 .live-label span { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px var(--signal); }
+.live-label small { margin-left: 5px; color: #4f5a61; font-size: 9px; letter-spacing: .02em; text-transform: none; }
+.live-label.cached { color: #f1c778; }
+.live-label.cached span { background: #f1c778; box-shadow: 0 0 10px rgba(241, 199, 120, .55); }
 .agent-status { padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; }
 .agent-status svg { width: 13px; }
 .agent-status.connected { color: var(--signal); border-color: rgba(141, 245, 178, .22); background: var(--signal-soft); }
@@ -83,7 +86,7 @@ button, input { font: inherit; } button { color: inherit; }
 .split-track { height: 3px; margin: 12px 0 15px; overflow: hidden; border-radius: 2px; background: rgba(255, 113, 131, .5); }
 .split-track span { display: block; height: 100%; background: var(--signal); }
 .market-card-meta { display: flex; align-items: center; gap: 12px; color: #68737a; font: 10px var(--font-geist-mono); text-transform: uppercase; }
-.market-card-meta span:nth-child(2) { margin-left: auto; } .market-card-meta svg { width: 13px; }
+.market-card-meta span:nth-child(3) { margin-left: auto; } .market-card-meta svg { width: 13px; }
 .empty-state { padding: 72px 24px; text-align: center; border: 1px dashed var(--border-strong); border-radius: 10px; }
 .empty-state > svg { width: 24px; margin: 0 auto 14px; color: var(--signal); }
 .empty-state h2 { margin: 0; font-size: 18px; } .empty-state p { margin: 7px 0 18px; color: var(--muted-foreground); font-size: 13px; }
@@ -152,6 +155,7 @@ button, input { font: inherit; } button { color: inherit; }
 .position-value { flex: 0 0 auto; align-items: end; } .position-value strong { font: 500 11px var(--font-geist-mono); }
 .position-value small { font: 500 10px var(--font-geist-mono); }
 .history-section { margin-top: 32px; }
+.position-empty { padding: 22px; color: #748087; font-size: 11px; text-align: center; }
 .drawer-loader { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; background: rgba(8,11,14,.88); color: #8a969d; font-size: 12px; }
 .drawer-loader svg { width: 22px; color: var(--signal); }
 

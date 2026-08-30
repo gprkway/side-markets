@@ -36,6 +36,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import type { Market } from '@/lib/markets/types';
+import type { MarketFeed } from '@/lib/markets/feed';
 import type { Holder, TraderProfile } from '@/lib/traders/types';
 
 type PaperTradeDraft = {
@@ -70,14 +71,63 @@ declare global {
 const compactMoney = new Intl.NumberFormat('en-US', {
   notation: 'compact', style: 'currency', currency: 'USD', maximumFractionDigits: 1,
 });
+const compactNumber = new Intl.NumberFormat('en-US', {
+  notation: 'compact', maximumFractionDigits: 1,
+});
 const shortDate = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
   timeZone: 'UTC',
 });
 
+const MARKET_CACHE_KEY = 'side.marketFeeds.v1';
+
+function marketCacheKey(query: string) {
+  return query.trim().toLowerCase() || 'trending';
+}
+
+function readCachedFeed(query: string): MarketFeed | null {
+  try {
+    const feeds = JSON.parse(localStorage.getItem(MARKET_CACHE_KEY) ?? '{}') as Record<string, MarketFeed>;
+    return feeds[marketCacheKey(query)] ?? null;
+  } catch {
+    localStorage.removeItem(MARKET_CACHE_KEY);
+    return null;
+  }
+}
+
+function writeCachedFeed(feed: MarketFeed) {
+  try {
+    const feeds = JSON.parse(localStorage.getItem(MARKET_CACHE_KEY) ?? '{}') as Record<string, MarketFeed>;
+    feeds[marketCacheKey(feed.query)] = feed;
+    localStorage.setItem(MARKET_CACHE_KEY, JSON.stringify(feeds));
+  } catch {
+    // A full or unavailable browser store should never block the live feed.
+  }
+}
+
 function primaryProbability(market: Market) {
-  return Math.round((market.outcomes[0]?.probability ?? 0) * 100);
+  return (market.outcomes[0]?.probability ?? 0) * 100;
+}
+
+function formatProbability(probability: number) {
+  const percent = Math.max(0, Math.min(100, probability * 100));
+  if (percent > 0 && percent < 0.1) return '<0.1%';
+  if ((percent > 0 && percent < 1) || (percent > 99 && percent < 100)) return `${percent.toFixed(1)}%`;
+  return `${Math.round(percent)}%`;
+}
+
+function formatCents(probability: number) {
+  const cents = Math.max(0, Math.min(100, probability * 100));
+  if (cents > 0 && cents < 0.1) return '<0.1¢';
+  if ((cents > 0 && cents < 1) || (cents > 99 && cents < 100)) return `${cents.toFixed(1)}¢`;
+  return `${Math.round(cents)}¢`;
+}
+
+function formatMovement(change: number) {
+  const points = change * 100;
+  if (Math.abs(points) < 0.05) return 'flat 24h';
+  return `${points > 0 ? '+' : ''}${points.toFixed(1)} pts`;
 }
 
 function MarketCard({ market, onOpen }: { market: Market; onOpen: (market: Market) => void }) {
@@ -93,12 +143,13 @@ function MarketCard({ market, onOpen }: { market: Market; onOpen: (market: Marke
       </div>
       <h2>{market.question}</h2>
       <div className="probability-row">
-        <strong>{probability}%</strong>
+        <strong>{formatProbability(market.outcomes[0]?.probability ?? 0)}</strong>
         <span>{market.outcomes[0]?.label ?? 'Yes'}</span>
       </div>
       <div className="split-track" aria-label={`${probability}% probability`}><span style={{ width: `${probability}%` }} /></div>
       <div className="market-card-meta">
         <span>{compactMoney.format(market.volume24h)} today</span>
+        <span className={market.priceChange24h > 0 ? 'positive' : market.priceChange24h < 0 ? 'negative' : ''}>{formatMovement(market.priceChange24h)}</span>
         <span>{market.endDate ? shortDate.format(new Date(market.endDate)) : 'Open'}</span>
         <ChevronRight aria-hidden="true" />
       </div>
@@ -106,10 +157,10 @@ function MarketCard({ market, onOpen }: { market: Market; onOpen: (market: Marke
   );
 }
 
-export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) {
-  const [markets, setMarkets] = useState(initialMarkets);
+export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
+  const [markets, setMarkets] = useState(initialFeed.markets);
   const [query, setQuery] = useState('');
-  const [activeQuery, setActiveQuery] = useState('');
+  const [activeQuery, setActiveQuery] = useState(initialFeed.query);
   const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -123,6 +174,8 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([]);
   const [tradeDraft, setTradeDraft] = useState<PaperTradeDraft | null>(null);
   const [tradeConfirmed, setTradeConfirmed] = useState(false);
+  const [feedMeta, setFeedMeta] = useState({ fetchedAt: initialFeed.fetchedAt, isStale: initialFeed.isStale });
+  const [freshnessText, setFreshnessText] = useState('updated just now');
   useEffect(() => {
     queueMicrotask(() => {
       try {
@@ -143,9 +196,12 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
     try {
       const response = await fetch(`/api/markets?q=${encodeURIComponent(cleanQuery)}`);
       if (!response.ok) throw new Error('Search failed');
-      const payload = (await response.json()) as { markets: Market[] };
+      const payload = (await response.json()) as MarketFeed;
       setMarkets(payload.markets);
       setActiveQuery(cleanQuery);
+      setFeedMeta({ fetchedAt: payload.fetchedAt, isStale: payload.isStale });
+      writeCachedFeed(payload);
+      if (payload.isStale) setError('Live refresh is unavailable. Showing last-known real market data.');
       setSelectedMarket(null);
       setSelectedTrader(null);
       setHolders([]);
@@ -154,15 +210,55 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
         query: cleanQuery || 'trending',
         visible_markets: payload.markets.slice(0, 8).map((market) => ({
           id: market.id, question: market.question,
-          probability: primaryProbability(market), volume_24h: market.volume24h,
+          probability_percent: primaryProbability(market), volume_24h: market.volume24h,
+          price_change_24h_points: market.priceChange24h * 100,
         })),
         ui_changed: true,
       };
     } catch {
-      setError('Could not refresh the market feed. Try again in a moment.');
-      return { error: 'Search failed', ui_changed: false };
+      const cached = readCachedFeed(cleanQuery);
+      if (cached?.markets.length) {
+        setMarkets(cached.markets);
+        setActiveQuery(cleanQuery);
+        setSelectedMarket(null);
+        setSelectedTrader(null);
+        setHolders([]);
+        setFeedMeta({ fetchedAt: cached.fetchedAt, isStale: true });
+        setError('Live refresh is unavailable. Showing last-known real market data.');
+        return { visible_market_count: cached.markets.length, query: cleanQuery || 'trending', data_status: 'cached_real_data', ui_changed: true };
+      }
+      setError('Could not refresh the live market feed. Try again in a moment.');
+      return { error: 'Live search failed and no real cached results are available.', ui_changed: false };
     } finally { setLoading(false); }
   }, []);
+
+  useEffect(() => {
+    if (initialFeed.markets.length) {
+      writeCachedFeed(initialFeed);
+      return;
+    }
+    const cached = readCachedFeed('');
+    if (cached?.markets.length) {
+      queueMicrotask(() => {
+        setMarkets(cached.markets);
+        setFeedMeta({ fetchedAt: cached.fetchedAt, isStale: true });
+        setError('Live refresh is unavailable. Showing last-known real market data.');
+      });
+    } else {
+      queueMicrotask(() => void runSearch(''));
+    }
+  }, [initialFeed, runSearch]);
+
+  useEffect(() => {
+    const updateFreshness = () => {
+      if (!feedMeta.fetchedAt) return setFreshnessText('waiting for live data');
+      const minutes = Math.max(0, Math.floor((Date.now() - new Date(feedMeta.fetchedAt).getTime()) / 60000));
+      setFreshnessText(minutes < 1 ? 'updated just now' : `updated ${minutes}m ago`);
+    };
+    queueMicrotask(updateFreshness);
+    const timer = window.setInterval(updateFreshness, 60000);
+    return () => window.clearInterval(timer);
+  }, [feedMeta.fetchedAt]);
 
   const openMarketById = useCallback((id: string) => {
     const market = markets.find((candidate) => candidate.id === id);
@@ -212,14 +308,14 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
         trader: {
           wallet: payload.trader.wallet,
           name: payload.trader.name || payload.trader.pseudonym,
-          portfolio_value: payload.trader.portfolioValue,
-          total_pnl: payload.trader.totalPnl,
+          visible_open_value: payload.trader.visibleOpenValue,
+          value_scope: 'Sum of the visible, non-redeemable open positions returned by Polymarket.',
           current_positions: payload.trader.positions.map((position) => ({
             condition_id: position.conditionId,
             title: position.title,
             side: position.outcome,
             value: position.currentValue,
-            pnl: position.pnl,
+            ...(position.pnl !== null ? { unrealized_pnl: position.pnl } : {}),
           })),
         },
         ui_changed: true,
@@ -408,7 +504,7 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
 
       <section className="market-surface" id="top">
         <div className="eyebrow-row">
-          <div className="live-label"><span /> LIVE MARKET INTELLIGENCE</div>
+          <div className={`live-label ${feedMeta.isStale ? 'cached' : ''}`}><span /> {feedMeta.isStale ? 'CACHED REAL DATA' : 'LIVE MARKET INTELLIGENCE'} <small>{freshnessText}</small></div>
           <div className={`agent-status ${agentConnected ? 'connected' : ''}`}><Bot /> {agentConnected ? 'AGENT CONNECTED' : 'BROWSER MODE'}</div>
         </div>
         <div className="title-row">
@@ -451,12 +547,12 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
               <div className="drawer-body">
                 <section className="outcome-panel">
                   <div className="outcome-heading"><span>MARKET PROBABILITY</span><span>24H VOLUME {compactMoney.format(selectedMarket.volume24h)}</span></div>
-                  <div className="drawer-probability">{primaryProbability(selectedMarket)}<small>%</small></div>
+                  <div className="drawer-probability">{formatProbability(selectedMarket.outcomes[0]?.probability ?? 0)}</div>
                   <div className="split-track large"><span style={{ width: `${primaryProbability(selectedMarket)}%` }} /></div>
                   <div className="outcome-buttons">
                     {selectedMarket.outcomes.slice(0, 2).map((outcome, index) => (
                       <button key={outcome.label} className={index === 0 ? 'yes' : 'no'} onClick={() => preparePaperTrade(outcome.label, 100)}>
-                        <span>Paper {outcome.label}</span><strong>{Math.round(outcome.probability * 100)}¢</strong>
+                        <span>Paper {outcome.label}</span><strong>{formatCents(outcome.probability)}</strong>
                       </button>
                     ))}
                   </div>
@@ -478,7 +574,7 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
                         <button key={`${holder.wallet}-${holder.outcomeIndex}`} onClick={() => void openTrader(holder.wallet)}>
                           <span className="holder-avatar">{holder.image ? <img src={holder.image} alt="" /> : (holder.name || holder.pseudonym || '0').slice(0, 1).toUpperCase()}</span>
                           <span className="holder-name"><strong>{holder.name || holder.pseudonym || `${holder.wallet.slice(0, 6)}…${holder.wallet.slice(-4)}`}</strong><small>{selectedMarket.outcomes[holder.outcomeIndex]?.label ?? `Side ${holder.outcomeIndex + 1}`}</small></span>
-                          <span className="holder-amount">{compactMoney.format(holder.amount)}<small>shares</small></span>
+                          <span className="holder-amount">{compactNumber.format(holder.amount)}<small>shares</small></span>
                           <ChevronRight />
                         </button>
                       ))}
@@ -504,9 +600,9 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
               </SheetHeader>
               <div className="drawer-body trader-body">
                 <div className="trader-stats">
-                  <div><span>OPEN VALUE</span><strong>{compactMoney.format(selectedTrader.portfolioValue)}</strong></div>
-                  <div><span>EST. TOTAL P&L</span><strong className={selectedTrader.totalPnl >= 0 ? 'positive' : 'negative'}>{selectedTrader.totalPnl >= 0 ? '+' : ''}{compactMoney.format(selectedTrader.totalPnl)}</strong></div>
-                  <div><span>POSITIONS</span><strong>{selectedTrader.positions.length}</strong></div>
+                  <div><span>VISIBLE OPEN VALUE</span><strong>{compactMoney.format(selectedTrader.visibleOpenValue)}</strong></div>
+                  <div><span>OPEN POSITIONS</span><strong>{selectedTrader.positions.length}</strong></div>
+                  <div><span>DATA SOURCE</span><strong className="positive">LIVE</strong></div>
                 </div>
 
                 <section className="positions-section">
@@ -516,9 +612,10 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
                       <button key={`${position.conditionId}-${position.outcome}`} onClick={() => { const match = markets.find((market) => market.conditionId === position.conditionId); if (match) { setSelectedMarket(match); setSelectedTrader(null); setHolders([]); } }}>
                         <span className="position-icon">{position.icon ? <img src={position.icon} alt="" /> : 'S'}</span>
                         <span className="position-title"><strong>{position.title}</strong><small>{position.outcome} · avg {Math.round(position.avgPrice * 100)}¢ → {Math.round(position.currentPrice * 100)}¢</small></span>
-                        <span className="position-value"><strong>{compactMoney.format(position.currentValue)}</strong><small className={position.pnl >= 0 ? 'positive' : 'negative'}>{position.pnl >= 0 ? '+' : ''}{compactMoney.format(position.pnl)}</small></span>
+                        <span className="position-value"><strong>{compactMoney.format(position.currentValue)}</strong>{position.pnl !== null && <small className={position.pnl >= 0 ? 'positive' : 'negative'}>{position.pnl >= 0 ? '+' : ''}{compactMoney.format(position.pnl)}</small>}</span>
                       </button>
                     ))}
+                    {selectedTrader.positions.length === 0 && <div className="position-empty">No non-redeemable open positions found.</div>}
                   </div>
                 </section>
 
@@ -529,7 +626,7 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
                       <div className="history-row" key={`${position.conditionId}-${position.outcome}`}>
                         <span className="position-icon">{position.icon ? <img src={position.icon} alt="" /> : 'S'}</span>
                         <span className="position-title"><strong>{position.title}</strong><small>{position.outcome} · resolved</small></span>
-                        <span className="position-value"><strong className={position.pnl >= 0 ? 'positive' : 'negative'}>{position.pnl >= 0 ? '+' : ''}{compactMoney.format(position.pnl)}</strong></span>
+                        <span className="position-value">{position.pnl !== null && <strong className={position.pnl >= 0 ? 'positive' : 'negative'}>{position.pnl >= 0 ? '+' : ''}{compactMoney.format(position.pnl)}</strong>}</span>
                       </div>
                     ))}
                   </div>
@@ -551,7 +648,7 @@ export function MarketBrowser({ initialMarkets }: { initialMarkets: Market[] }) 
                 <DialogDescription>{tradeDraft.question}</DialogDescription>
               </DialogHeader>
               <div className="trade-summary">
-                <div><span>SIDE</span><strong>{tradeDraft.outcome} at {Math.round(tradeDraft.probability * 100)}¢</strong></div>
+                <div><span>SIDE</span><strong>{tradeDraft.outcome} at {formatCents(tradeDraft.probability)}</strong></div>
                 <label htmlFor="paper-trade-amount"><span>SIMULATED AMOUNT</span><span className="amount-input"><b>$</b><Input id="paper-trade-amount" type="number" min={1} max={10000} value={tradeDraft.amount} onChange={(event) => setTradeDraft({ ...tradeDraft, amount: Math.max(1, Number(event.target.value)) })} /></span></label>
                 <div><span>EST. SHARES</span><strong>{tradeDraft.probability > 0 ? (tradeDraft.amount / tradeDraft.probability).toFixed(1) : '—'}</strong></div>
               </div>

@@ -18,6 +18,7 @@ type RawMarket = Record<string, unknown> & {
   volume?: string | number;
   volumeNum?: number;
   volume24hr?: number;
+  oneDayPriceChange?: number;
   liquidity?: string | number;
   liquidityNum?: number;
 };
@@ -65,6 +66,7 @@ function normalizeMarket(raw: RawMarket, event?: RawEvent): Market | null {
     volume: numeric(raw.volumeNum ?? raw.volume),
     volume24h: numeric(raw.volume24hr),
     liquidity: numeric(raw.liquidityNum ?? raw.liquidity),
+    priceChange24h: numeric(raw.oneDayPriceChange),
     outcomes,
     source: 'polymarket',
   };

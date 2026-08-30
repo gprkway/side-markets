@@ -1,10 +1,9 @@
-import { getMarkets, searchMarkets } from '@/lib/markets/polymarket';
+import { getMarketFeed } from '@/lib/markets/feed';
 
 export async function GET(request: Request) {
   const query = new URL(request.url).searchParams.get('q')?.trim() ?? '';
   try {
-    const markets = query ? await searchMarkets(query) : await getMarkets();
-    return Response.json({ markets, query, fetchedAt: new Date().toISOString() });
+    return Response.json(await getMarketFeed(query));
   } catch {
     return Response.json({ error: 'Market data is temporarily unavailable.' }, { status: 502 });
   }

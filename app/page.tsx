@@ -1,8 +1,12 @@
 import { MarketBrowser } from '@/components/market-browser';
-import { getMarkets } from '@/lib/markets/polymarket';
+import { getMarketFeed } from '@/lib/markets/feed';
 
 export default async function Home() {
-  const markets = await getMarkets();
-
-  return <MarketBrowser initialMarkets={markets} />;
+  let feed;
+  try {
+    feed = await getMarketFeed();
+  } catch {
+    feed = { markets: [], query: '', fetchedAt: '', isStale: true };
+  }
+  return <MarketBrowser initialFeed={feed} />;
 }

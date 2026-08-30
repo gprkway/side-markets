@@ -15,6 +15,7 @@ export type Market = {
   volume: number;
   volume24h: number;
   liquidity: number;
+  priceChange24h: number;
   outcomes: Outcome[];
   source: 'polymarket';
 };

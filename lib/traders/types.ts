@@ -18,8 +18,8 @@ export type TraderPosition = {
   avgPrice: number;
   currentPrice: number;
   currentValue: number;
-  pnl: number;
-  pnlPercent: number;
+  pnl: number | null;
+  pnlPercent: number | null;
   closed: boolean;
 };
 
@@ -30,8 +30,7 @@ export type TraderProfile = {
   bio: string;
   image: string;
   verified: boolean;
-  portfolioValue: number;
-  totalPnl: number;
+  visibleOpenValue: number;
   positions: TraderPosition[];
   history: TraderPosition[];
 };
