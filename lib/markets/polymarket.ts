@@ -121,3 +121,11 @@ export async function searchMarkets(query: string, limit = 18): Promise<Market[]
     .sort((a, b) => b.volume24h - a.volume24h)
     .slice(0, limit);
 }
+
+export async function getMarketByConditionId(conditionId: string): Promise<Market | null> {
+  const params = new URLSearchParams({ condition_ids: conditionId, limit: '1' });
+  const response = await fetch(`${GAMMA_API}/markets?${params}`, { cache: 'no-store' });
+  if (!response.ok) throw new Error('Unable to load Polymarket market');
+  const raw = (await response.json()) as RawMarket[];
+  return raw.length ? normalizeMarket(raw[0], raw[0].events?.[0]) : null;
+}

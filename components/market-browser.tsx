@@ -16,6 +16,8 @@ import {
   LoaderCircle,
   MessageSquare,
   Plus,
+  Radar,
+  RefreshCw,
   Sparkles,
   Star,
   TrendingUp,
@@ -47,6 +49,8 @@ import type { MarketFeed } from '@/lib/markets/feed';
 import type { Holder, TraderProfile } from '@/lib/traders/types';
 import type { MarketComment } from '@/lib/comments/types';
 import type { ComposedTrader, FollowedTrader, SavedView, TransientTraderProfiles } from '@/lib/views/types';
+import { evaluateTraderWatch } from '@/lib/watches/evaluate';
+import type { TraderWatch, WatchRelationship } from '@/lib/watches/types';
 
 type PaperTradeDraft = {
   marketId: string;
@@ -109,6 +113,13 @@ const commentTime = new Intl.DateTimeFormat('en-US', {
 const MARKET_CACHE_KEY = 'side.marketFeeds.v1';
 const SAVED_VIEWS_KEY = 'side.savedViews';
 const FOLLOWED_TRADERS_KEY = 'side.followedTraders';
+const TRADER_WATCHES_KEY = 'side.traderWatches.v1';
+
+const watchRelationshipLabel: Record<WatchRelationship, string> = {
+  same_side: 'Consensus',
+  opposite_sides: 'Disagreement',
+  new_position: 'New position',
+};
 
 function marketCacheKey(query: string) {
   return query.trim().toLowerCase() || 'trending';
@@ -158,9 +169,18 @@ function formatMovement(change: number) {
   return `${points > 0 ? '+' : ''}${points.toFixed(1)} pts`;
 }
 
+function formatWatchCheckedAt(value: string | null) {
+  if (!value) return 'Baseline not checked';
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
+  if (minutes < 1) return 'Checked just now';
+  if (minutes < 60) return `Checked ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `Checked ${hours}h ago`;
+}
+
 function isSportsMarket(market: Market) {
   const haystack = `${market.category} ${market.question} ${market.description}`.toLowerCase();
-  return /\b(sports?|fc|cf|afc|nba|nfl|nhl|mlb|soccer|football|tennis|cricket|league|tournament|match|game \d|vs\.?\b|championship|upcoming game|match statistics|regular play|stoppage time|governing body or event organizers)\b/.test(haystack);
+  return /\b(sports?|fc|cf|afc|nba|wnba|nfl|nhl|mlb|kbo|ncaa|uefa|atp|wta|formula 1|esports?|counter-strike|soccer|football|tennis|cricket|league|tournament|match|game \d|vs\.?\b|championship|upcoming game|match statistics|regular play|stoppage time|governing body or event organizers)\b/.test(haystack);
 }
 
 function MarketCard({
@@ -221,6 +241,11 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [traderLoading, setTraderLoading] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [watchlistOnly, setWatchlistOnly] = useState(false);
+  const [watches, setWatches] = useState<TraderWatch[]>([]);
+  const [watchesOpen, setWatchesOpen] = useState(false);
+  const [currentWatchId, setCurrentWatchId] = useState<string | null>(null);
+  const [watchLoadingId, setWatchLoadingId] = useState<string | null>(null);
+  const [watchesHydrated, setWatchesHydrated] = useState(false);
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([]);
   const [tradeDraft, setTradeDraft] = useState<PaperTradeDraft | null>(null);
   const [tradeConfirmed, setTradeConfirmed] = useState(false);
@@ -241,6 +266,8 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('market');
   const [drawerDirection, setDrawerDirection] = useState<'forward' | 'back'>('forward');
   const agentActionTimer = useRef<number | null>(null);
+  const watchRefreshStarted = useRef(false);
+  const watchesRef = useRef<TraderWatch[]>([]);
   const returnDrawerMode = useRef<Exclude<DrawerMode, 'trader'>>('market');
 
   const commitMotion = useCallback((kind: string, update: () => void) => {
@@ -275,6 +302,30 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     return result;
   }, [reportAgentAction]);
 
+  const availableWatchTraders = useMemo(() => {
+    const unique = new Map<string, { wallet: string; name: string }>();
+    followedTraders.forEach((trader) => unique.set(trader.wallet.toLowerCase(), { wallet: trader.wallet, name: trader.name }));
+    holders.forEach((holder) => unique.set(holder.wallet.toLowerCase(), {
+      wallet: holder.wallet,
+      name: holder.name || holder.pseudonym || `${holder.wallet.slice(0, 8)}…`,
+    }));
+    if (selectedTrader) unique.set(selectedTrader.wallet.toLowerCase(), {
+      wallet: selectedTrader.wallet,
+      name: selectedTrader.name || selectedTrader.pseudonym || `${selectedTrader.wallet.slice(0, 8)}…`,
+    });
+    return [...unique.values()];
+  }, [followedTraders, holders, selectedTrader]);
+  const currentWatch = useMemo(
+    () => watches.find((watch) => watch.id === currentWatchId) ?? null,
+    [currentWatchId, watches],
+  );
+
+  const persistWatches = useCallback((next: TraderWatch[]) => {
+    watchesRef.current = next;
+    setWatches(next);
+    localStorage.setItem(TRADER_WATCHES_KEY, JSON.stringify(next));
+  }, []);
+
   useEffect(() => () => {
     if (agentActionTimer.current !== null) window.clearTimeout(agentActionTimer.current);
   }, []);
@@ -285,11 +336,17 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         setPaperTrades(JSON.parse(localStorage.getItem('side.paperTrades') ?? '[]'));
         setSavedViews(JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY) ?? '[]'));
         setFollowedTraders(JSON.parse(localStorage.getItem(FOLLOWED_TRADERS_KEY) ?? '[]'));
+        const storedWatches = JSON.parse(localStorage.getItem(TRADER_WATCHES_KEY) ?? '[]') as TraderWatch[];
+        watchesRef.current = storedWatches;
+        setWatches(storedWatches);
       } catch {
         localStorage.removeItem('side.watchlist');
         localStorage.removeItem('side.paperTrades');
         localStorage.removeItem(SAVED_VIEWS_KEY);
         localStorage.removeItem(FOLLOWED_TRADERS_KEY);
+        localStorage.removeItem(TRADER_WATCHES_KEY);
+      } finally {
+        setWatchesHydrated(true);
       }
     });
   }, []);
@@ -402,6 +459,35 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     };
   }, [commitMotion, markets]);
 
+  const openMarketByConditionId = useCallback(async (conditionId: string) => {
+    const existing = markets.find((market) => market.conditionId === conditionId);
+    let market = existing;
+    if (!market) {
+      const response = await fetch(`/api/markets?condition=${encodeURIComponent(conditionId)}`);
+      if (!response.ok) return { error: 'Could not load this live market.', ui_changed: false };
+      const payload = await response.json() as { market: Market };
+      market = payload.market;
+    }
+    const openedMarket = market;
+    commitMotion('drawer-back', () => {
+      if (!existing) setMarkets((current) => [openedMarket, ...current]);
+      setSelectedMarket(openedMarket);
+      setSelectedTrader(null);
+      setHolders([]);
+      setComments([]);
+      setCommentsOpen(false);
+      setCommentArguments(null);
+      setDrawerMode('market');
+      setDrawerDirection('back');
+      returnDrawerMode.current = 'market';
+    });
+    return {
+      market: { id: openedMarket.id, condition_id: openedMarket.conditionId, question: openedMarket.question },
+      drawer_opened: true,
+      ui_changed: true,
+    };
+  }, [commitMotion, markets]);
+
   const loadHolders = useCallback(async () => {
     if (!selectedMarket) return { error: 'No market is currently open.', ui_changed: false };
     setHoldersLoading(true);
@@ -493,6 +579,184 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     localStorage.setItem(FOLLOWED_TRADERS_KEY, JSON.stringify(next));
     return { wallet, followed: !exists, ui_changed: true };
   }, [commitMotion, followedTraders]);
+
+  const evaluateWatchDefinition = useCallback(async (watch: TraderWatch) => {
+    setWatchLoadingId(watch.id);
+    try {
+      const profiles = (await Promise.all(watch.traderWallets.map(async (wallet) => {
+        const response = await fetch(`/api/traders?wallet=${encodeURIComponent(wallet)}`);
+        if (!response.ok) return null;
+        return (await response.json() as { trader: TraderProfile }).trader;
+      }))).filter(Boolean) as TraderProfile[];
+      if (!profiles.length) throw new Error('No trader profiles were available.');
+      const names: Record<string, string> = {};
+      profiles.forEach((profile) => {
+        names[profile.wallet.toLowerCase()] = profile.name || profile.pseudonym || `${profile.wallet.slice(0, 8)}…`;
+      });
+      return evaluateTraderWatch(watch, profiles, names);
+    } finally {
+      setWatchLoadingId(null);
+    }
+  }, []);
+
+  const createTraderWatch = useCallback(async (input: Record<string, unknown>) => {
+    const available = new Map(availableWatchTraders.map((trader) => [trader.wallet.toLowerCase(), trader]));
+    const requestedWallets = Array.isArray(input.trader_wallets) ? input.trader_wallets.map(String) : [];
+    const traderWallets = [...new Set(requestedWallets
+      .map((wallet) => available.get(wallet.toLowerCase())?.wallet)
+      .filter(Boolean) as string[])];
+    const relationship = ['same_side', 'opposite_sides', 'new_position'].includes(String(input.relationship))
+      ? input.relationship as WatchRelationship
+      : 'same_side';
+    const requiredTraders = relationship === 'new_position' ? 1 : 2;
+    if (traderWallets.length < requiredTraders) {
+      return { error: `${watchRelationshipLabel[relationship]} watches require at least ${requiredTraders} visible or followed trader${requiredTraders === 1 ? '' : 's'}.`, ui_changed: false };
+    }
+    const now = new Date().toISOString();
+    const minimumTraderOverlap = relationship === 'new_position'
+      ? 1
+      : Math.max(2, Math.min(traderWallets.length, Number(input.minimum_trader_overlap) || 2));
+    const watch: TraderWatch = {
+      id: crypto.randomUUID(),
+      name: typeof input.name === 'string' && input.name.trim() ? input.name.trim().slice(0, 80) : `${watchRelationshipLabel[relationship]} watch`,
+      traderWallets,
+      relationship,
+      minimumTraderOverlap,
+      minimumPositionValue: Math.max(0, Number(input.minimum_position_value) || 0),
+      excludeSports: input.exclude_sports !== false,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+      lastEvaluatedAt: null,
+      snapshots: [],
+      matches: [],
+    };
+    try {
+      const evaluated = await evaluateWatchDefinition(watch);
+      const next = [evaluated, ...watchesRef.current];
+      commitMotion('compose', () => {
+        persistWatches(next);
+        setCurrentWatchId(evaluated.id);
+        setWatchesOpen(true);
+        setSavedViewsOpen(false);
+      });
+      return {
+        watch: {
+          id: evaluated.id,
+          name: evaluated.name,
+          relationship: evaluated.relationship,
+          trader_wallets: evaluated.traderWallets,
+          minimum_trader_overlap: evaluated.minimumTraderOverlap,
+          minimum_position_value: evaluated.minimumPositionValue,
+          exclude_sports: evaluated.excludeSports,
+          status: evaluated.status,
+        },
+        match_count: evaluated.matches.length,
+        baseline_created: relationship === 'new_position',
+        evaluation_mode: 'Checked when Side loads, refreshes, or the human requests Check now.',
+        ui_changed: true,
+      };
+    } catch {
+      return { error: 'Could not evaluate real trader positions for this Watch.', ui_changed: false };
+    }
+  }, [availableWatchTraders, commitMotion, evaluateWatchDefinition, persistWatches]);
+
+  const updateCurrentWatch = useCallback(async (input: Record<string, unknown>) => {
+    if (!currentWatch) return { error: 'No Watch is currently open.', ui_changed: false };
+    const available = new Map(availableWatchTraders.map((trader) => [trader.wallet.toLowerCase(), trader]));
+    currentWatch.traderWallets.forEach((wallet) => {
+      if (!available.has(wallet.toLowerCase())) available.set(wallet.toLowerCase(), { wallet, name: `${wallet.slice(0, 8)}…` });
+    });
+    const requestedWallets = Array.isArray(input.trader_wallets) ? input.trader_wallets.map(String) : null;
+    const traderWallets = requestedWallets
+      ? [...new Set(requestedWallets.map((wallet) => available.get(wallet.toLowerCase())?.wallet).filter(Boolean) as string[])]
+      : currentWatch.traderWallets;
+    const relationship = ['same_side', 'opposite_sides', 'new_position'].includes(String(input.relationship))
+      ? input.relationship as WatchRelationship
+      : currentWatch.relationship;
+    const requiredTraders = relationship === 'new_position' ? 1 : 2;
+    if (traderWallets.length < requiredTraders) {
+      return { error: `${watchRelationshipLabel[relationship]} watches require at least ${requiredTraders} traders.`, ui_changed: false };
+    }
+    const status = input.status === 'paused' || input.status === 'active' ? input.status : currentWatch.status;
+    const updated: TraderWatch = {
+      ...currentWatch,
+      name: typeof input.name === 'string' && input.name.trim() ? input.name.trim().slice(0, 80) : currentWatch.name,
+      traderWallets,
+      relationship,
+      minimumTraderOverlap: relationship === 'new_position'
+        ? 1
+        : Math.max(2, Math.min(traderWallets.length, Number(input.minimum_trader_overlap) || currentWatch.minimumTraderOverlap)),
+      minimumPositionValue: input.minimum_position_value === undefined
+        ? currentWatch.minimumPositionValue
+        : Math.max(0, Number(input.minimum_position_value) || 0),
+      excludeSports: typeof input.exclude_sports === 'boolean' ? input.exclude_sports : currentWatch.excludeSports,
+      status,
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      const evaluated = status === 'active' ? await evaluateWatchDefinition(updated) : updated;
+      const next = watchesRef.current.map((watch) => watch.id === evaluated.id ? evaluated : watch);
+      commitMotion('refine', () => {
+        persistWatches(next);
+        setWatchesOpen(true);
+      });
+      return {
+        watch_id: evaluated.id,
+        name: evaluated.name,
+        relationship: evaluated.relationship,
+        trader_count: evaluated.traderWallets.length,
+        minimum_trader_overlap: evaluated.minimumTraderOverlap,
+        minimum_position_value: evaluated.minimumPositionValue,
+        exclude_sports: evaluated.excludeSports,
+        status: evaluated.status,
+        match_count: evaluated.matches.length,
+        ui_changed: true,
+      };
+    } catch {
+      return { error: 'The Watch was not changed because live trader data could not be checked.', ui_changed: false };
+    }
+  }, [availableWatchTraders, commitMotion, currentWatch, evaluateWatchDefinition, persistWatches]);
+
+  const checkWatchNow = useCallback(async (watchId: string) => {
+    const watch = watchesRef.current.find((candidate) => candidate.id === watchId);
+    if (!watch) return { error: 'Watch not found.', ui_changed: false };
+    if (watch.status === 'paused') {
+      setCurrentWatchId(watch.id);
+      setWatchesOpen(true);
+      return { watch_id: watch.id, status: 'paused', match_count: watch.matches.length, ui_changed: true };
+    }
+    try {
+      const evaluated = await evaluateWatchDefinition(watch);
+      const next = watchesRef.current.map((candidate) => candidate.id === watch.id ? evaluated : candidate);
+      commitMotion('refine', () => {
+        persistWatches(next);
+        setCurrentWatchId(watch.id);
+        setWatchesOpen(true);
+        setSavedViewsOpen(false);
+      });
+      return {
+        watch_id: evaluated.id,
+        checked_at: evaluated.lastEvaluatedAt,
+        match_count: evaluated.matches.length,
+        matches: evaluated.matches.slice(0, 12),
+        ui_changed: true,
+      };
+    } catch {
+      return { error: 'Could not refresh this Watch from live trader positions.', ui_changed: false };
+    }
+  }, [commitMotion, evaluateWatchDefinition, persistWatches]);
+
+  useEffect(() => {
+    if (!watchesHydrated || watchRefreshStarted.current) return;
+    watchRefreshStarted.current = true;
+    const active = watches.filter((watch) => watch.status === 'active');
+    if (!active.length) return;
+    void Promise.all(active.map(async (watch) => {
+      try { return await evaluateWatchDefinition(watch); } catch { return watch; }
+    })).then((evaluated) => persistWatches(watches.map((watch) =>
+      evaluated.find((candidate) => candidate.id === watch.id) ?? watch)));
+  }, [evaluateWatchDefinition, persistWatches, watches, watchesHydrated]);
 
   const loadComments = useCallback(async () => {
     if (!selectedMarket?.eventId) {
@@ -892,6 +1156,77 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
+    if (!modelContext?.registerTool || (!availableWatchTraders.length && !watches.length)) return;
+    const controller = new AbortController();
+    if (availableWatchTraders.length) void modelContext.registerTool({
+      name: 'create_trader_watch',
+      title: 'Create a persistent trader Watch',
+      description: 'Create a deterministic, device-local Watch from explicit visible or followed trader wallets. Side stores and evaluates structured rules; Codex resolves language such as “these traders” before calling this tool.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Short human-readable Watch name.' },
+          trader_wallets: { type: 'array', minItems: 1, items: { type: 'string', description: 'Exact wallet from current holder, trader, or followed-trader context.' } },
+          relationship: { type: 'string', enum: ['same_side', 'opposite_sides', 'new_position'] },
+          minimum_trader_overlap: { type: 'number', minimum: 1, maximum: 32 },
+          minimum_position_value: { type: 'number', minimum: 0, description: 'Minimum visible current value in USD.' },
+          exclude_sports: { type: 'boolean' },
+        },
+        required: ['name', 'trader_wallets', 'relationship'],
+        additionalProperties: false,
+      },
+      execute: (input) => runAgentMutation(
+        () => createTraderWatch(input),
+        (result) => `Watch created · ${Number(result.match_count) || 0} current matches`,
+      ),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    if (watches.length) void modelContext.registerTool({
+      name: 'list_watches',
+      title: 'List Side Watches',
+      description: 'Return the deterministic Watches saved on this device so Codex can choose one to inspect or edit.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: () => ({
+        watches: watchesRef.current.map((watch) => ({
+          id: watch.id,
+          name: watch.name,
+          relationship: watch.relationship,
+          trader_wallets: watch.traderWallets,
+          status: watch.status,
+          match_count: watch.matches.length,
+          last_checked_at: watch.lastEvaluatedAt,
+        })),
+        ui_changed: false,
+      }),
+      annotations: { readOnlyHint: true },
+    }, { signal: controller.signal });
+    if (watches.length) void modelContext.registerTool({
+      name: 'open_watch',
+      title: 'Open a saved Watch',
+      description: 'Open one device-local Watch in Side so its rule, status, current matches, and context-sensitive editing tools become visible.',
+      inputSchema: {
+        type: 'object',
+        properties: { watch_id: { type: 'string', description: 'Exact Watch ID returned by list_watches.' } },
+        required: ['watch_id'],
+        additionalProperties: false,
+      },
+      execute: ({ watch_id }) => runAgentMutation(() => {
+        const watch = watchesRef.current.find((candidate) => candidate.id === String(watch_id));
+        if (!watch) return { error: 'Watch not found.', ui_changed: false };
+        commitMotion('drawer-open', () => {
+          setCurrentWatchId(watch.id);
+          setWatchesOpen(true);
+          setSavedViewsOpen(false);
+        });
+        return { watch_id: watch.id, name: watch.name, status: watch.status, match_count: watch.matches.length, ui_changed: true };
+      }, 'Watch opened'),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    return () => controller.abort();
+  }, [availableWatchTraders, commitMotion, createTraderWatch, runAgentMutation, watches.length]);
+
+  useEffect(() => {
+    const modelContext = document.modelContext ?? navigator.modelContext;
     if (!selectedMarket || !modelContext?.registerTool) return;
     const controller = new AbortController();
     const register = (tool: Parameters<ModelContext['registerTool']>[0]) =>
@@ -928,13 +1263,13 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       annotations: { readOnlyHint: false },
     });
     void register({
-      name: 'toggle_current_market_watchlist',
-      title: 'Toggle current market watchlist',
-      description: 'Add or remove the market currently open in Side from the device-local watchlist.',
+      name: 'toggle_current_market_saved',
+      title: 'Save or unsave the current market',
+      description: 'Add or remove the market currently open in Side from device-local Saved markets. Saved markets are bookmarks, distinct from programmable Watches.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       execute: () => runAgentMutation(
         () => toggleWatchlist(selectedMarket.id),
-        (result) => result.watched ? 'Added to watchlist' : 'Removed from watchlist',
+        (result) => result.watched ? 'Market saved' : 'Market removed from Saved',
       ),
       annotations: { readOnlyHint: false },
     });
@@ -1044,8 +1379,91 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       },
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
+    if (selectedTrader.positions.length) void modelContext.registerTool({
+      name: 'open_trader_position',
+      title: 'Open one of this trader’s markets',
+      description: 'Load a real market from the current trader’s position by Polymarket condition ID and open it in the same Side drawer, even when it was not in the discovery grid.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          condition_id: { type: 'string', enum: selectedTrader.positions.map((position) => position.conditionId) },
+        },
+        required: ['condition_id'],
+        additionalProperties: false,
+      },
+      execute: ({ condition_id }) => runAgentMutation(
+        () => openMarketByConditionId(typeof condition_id === 'string' ? condition_id : ''),
+        'Trader position opened',
+      ),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
     return () => controller.abort();
-  }, [followedTraders, runAgentMutation, selectedTrader, toggleTraderFollow]);
+  }, [followedTraders, openMarketByConditionId, runAgentMutation, selectedTrader, toggleTraderFollow]);
+
+  useEffect(() => {
+    const modelContext = document.modelContext ?? navigator.modelContext;
+    if (!currentWatch || !modelContext?.registerTool) return;
+    const controller = new AbortController();
+    void modelContext.registerTool({
+      name: 'get_current_watch_context',
+      title: 'Inspect the open Watch',
+      description: 'Return the structured rule, snapshots, current matches, status, and last evaluation time for the Watch open in Side.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: () => ({ ...currentWatch, ui_changed: false }),
+      annotations: { readOnlyHint: true },
+    }, { signal: controller.signal });
+    void modelContext.registerTool({
+      name: 'update_current_watch',
+      title: 'Edit the open Watch in place',
+      description: 'Update the same persistent Watch using explicit supported rule primitives. Side reevaluates active Watches from real current positions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          trader_wallets: { type: 'array', minItems: 1, items: { type: 'string', description: 'Exact wallet already in this Watch or available from current Side context.' } },
+          relationship: { type: 'string', enum: ['same_side', 'opposite_sides', 'new_position'] },
+          minimum_trader_overlap: { type: 'number', minimum: 1, maximum: 32 },
+          minimum_position_value: { type: 'number', minimum: 0 },
+          exclude_sports: { type: 'boolean' },
+          status: { type: 'string', enum: ['active', 'paused'] },
+        },
+        additionalProperties: false,
+      },
+      execute: (input) => runAgentMutation(
+        () => updateCurrentWatch(input),
+        (result) => `${String(result.status)} · ${Number(result.trader_count) || 0} traders · ${compactMoney.format(Number(result.minimum_position_value) || 0)} minimum`,
+      ),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    void modelContext.registerTool({
+      name: 'show_current_watch_matches',
+      title: 'Check and show Watch matches',
+      description: 'Evaluate the open active Watch against live current positions and visibly render its matches. Paused Watches show saved matches without refreshing.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: () => runAgentMutation(
+        () => checkWatchNow(currentWatch.id),
+        (result) => `${Number(result.match_count) || 0} Watch matches`,
+      ),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    if (currentWatch.matches.length) void modelContext.registerTool({
+      name: 'open_watch_match',
+      title: 'Open a matching market',
+      description: 'Open one of the real markets currently matched by the Watch in the standard Side market drawer.',
+      inputSchema: {
+        type: 'object',
+        properties: { condition_id: { type: 'string', enum: currentWatch.matches.map((match) => match.conditionId) } },
+        required: ['condition_id'],
+        additionalProperties: false,
+      },
+      execute: ({ condition_id }) => runAgentMutation(
+        () => openMarketByConditionId(typeof condition_id === 'string' ? condition_id : ''),
+        'Watch match opened',
+      ),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
+    return () => controller.abort();
+  }, [availableWatchTraders, checkWatchNow, currentWatch, openMarketByConditionId, runAgentMutation, updateCurrentWatch]);
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
@@ -1115,14 +1533,17 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
           <kbd><Command /> K</kbd>
         </form>
         <nav className="header-actions" aria-label="Primary">
-          <Button variant={savedViewsOpen ? 'secondary' : 'ghost'} onClick={() => setSavedViewsOpen((current) => !current)}>
+          <Button variant={savedViewsOpen ? 'secondary' : 'ghost'} onClick={() => { setSavedViewsOpen((current) => !current); setWatchesOpen(false); }}>
             <Bookmark /> Views <span key={savedViews.length} className="nav-count count-pop">{savedViews.length}</span>
           </Button>
           <Button variant="ghost" onClick={() => void composeFollowedTraderView()} disabled={!followedTraders.length}>
             <UserCheck /> Followed <span key={followedTraders.length} className="nav-count count-pop">{followedTraders.length}</span>
           </Button>
           <Button variant={watchlistOnly ? 'secondary' : 'ghost'} onClick={() => setWatchlistOnly((current) => !current)}>
-            <Star /> Watchlist <span key={watchlist.length} className="nav-count count-pop">{watchlist.length}</span>
+            <Star /> Saved <span key={watchlist.length} className="nav-count count-pop">{watchlist.length}</span>
+          </Button>
+          <Button variant={watchesOpen ? 'secondary' : 'ghost'} onClick={() => { setWatchesOpen((current) => !current); setSavedViewsOpen(false); if (!currentWatchId && watches[0]) setCurrentWatchId(watches[0].id); }}>
+            <Radar /> Watches <span key={watches.length} className="nav-count count-pop">{watches.length}</span>
           </Button>
           <Button variant="outline"><CircleDollarSign /> Paper <span className="paper-balance">{paperTrades.length} trades</span></Button>
         </nav>
@@ -1146,6 +1567,53 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             )) : <p>No saved views yet. Ask your agent to compose one.</p>}
           </div>
         )}
+        {watchesOpen && (
+          <div className="watches-panel" aria-label="Saved Watches">
+            <div className="saved-views-heading"><span>PROGRAMMABLE WATCHES</span><button onClick={() => setWatchesOpen(false)} aria-label="Close Watches"><X /></button></div>
+            <div className="watch-list">
+              {watches.length ? watches.map((watch) => (
+                <article key={watch.id} className={`watch-card ${currentWatchId === watch.id ? 'is-current' : ''}`}>
+                  <button className="watch-card-main" aria-label={`Open Watch ${watch.name}`} onClick={() => setCurrentWatchId(watch.id)}>
+                    <span className={`watch-process-dot ${watch.status}`} />
+                    <span>
+                      <small>{watchRelationshipLabel[watch.relationship].toUpperCase()} WATCH</small>
+                      <strong>{watch.name}</strong>
+                      <b>{watch.traderWallets.length} traders · {watch.relationship === 'new_position' ? 'New entries' : `${watch.minimumTraderOverlap}+ required`} · {watch.excludeSports ? 'No sports' : 'All categories'}</b>
+                    </span>
+                    <span className="watch-match-count"><strong>{watch.matches.length}</strong><small>matches</small></span>
+                  </button>
+                  <button className="watch-check" onClick={() => void checkWatchNow(watch.id)} disabled={watchLoadingId === watch.id || watch.status === 'paused'}>
+                    <RefreshCw className={watchLoadingId === watch.id ? 'spin' : ''} /> {watch.status === 'paused' ? 'Paused' : 'Check now'}
+                  </button>
+                </article>
+              )) : <div className="watch-empty"><Radar /><strong>No Watches yet</strong><p>Follow or inspect traders, then ask your agent to create a consensus, disagreement, or new-position Watch.</p></div>}
+            </div>
+            {currentWatch && (
+              <section key={`${currentWatch.id}-${currentWatch.updatedAt}`} className="watch-detail">
+                <div className="watch-detail-head">
+                  <span><b className={currentWatch.status}>{currentWatch.status}</b>{formatWatchCheckedAt(currentWatch.lastEvaluatedAt)}</span>
+                  <small>CHECKED ON SIDE REFRESH</small>
+                </div>
+                <div className="watch-rule-grid">
+                  <div><span>TRADERS</span><strong>{currentWatch.traderWallets.length}</strong></div>
+                  <div><span>RELATIONSHIP</span><strong>{watchRelationshipLabel[currentWatch.relationship]}</strong></div>
+                  <div><span>REQUIRED</span><strong>{currentWatch.relationship === 'new_position' ? 'Any trader' : `${currentWatch.minimumTraderOverlap} traders`}</strong></div>
+                  <div><span>MINIMUM</span><strong>{compactMoney.format(currentWatch.minimumPositionValue)}</strong></div>
+                </div>
+                <div className="watch-matches">
+                  <div className="watch-matches-label"><span>CURRENT MATCHES</span><span>{currentWatch.matches.length}</span></div>
+                  {currentWatch.matches.slice(0, 8).map((match) => (
+                    <button key={match.id} onClick={() => void openMarketByConditionId(match.conditionId)}>
+                      <span><strong>{match.title}</strong><small>{match.positions.map((position) => `${position.traderName} · ${position.outcome}`).join(' / ')}</small></span>
+                      <ChevronRight />
+                    </button>
+                  ))}
+                  {!currentWatch.matches.length && <p>{currentWatch.relationship === 'new_position' && currentWatch.snapshots.length ? 'Baseline saved. A match appears when a watched trader enters a position not seen in the previous snapshot.' : 'No current positions satisfy this Watch.'}</p>}
+                </div>
+              </section>
+            )}
+          </div>
+        )}
         <div className="eyebrow-row">
           <div className={`live-label ${feedMeta.isStale ? 'cached' : ''}`}><span /> {feedMeta.isStale ? 'CACHED REAL DATA' : 'LIVE MARKET INTELLIGENCE'} <small>{freshnessText}</small></div>
           <div className={`agent-status ${agentConnected ? 'connected' : ''}`}><Bot /> {agentConnected ? 'AGENT CONNECTED' : 'BROWSER MODE'}</div>
@@ -1156,7 +1624,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             className="title-copy"
             style={{ viewTransitionName: 'side-page-title' }}
           >
-            <h1>{composedView ? composedView.title : watchlistOnly ? 'Your watchlist' : activeQuery ? `Markets for “${activeQuery}”` : 'Markets moving now'}</h1>
+            <h1>{composedView ? composedView.title : watchlistOnly ? 'Saved markets' : activeQuery ? `Markets for “${activeQuery}”` : 'Markets moving now'}</h1>
             <p>{composedView ? composedView.intent : watchlistOnly ? 'Device-local markets you want to keep close.' : activeQuery ? 'Live matches, ranked by activity.' : 'High-signal markets ranked by 24-hour volume.'}</p>
           </div>
           <div className="feed-stat"><span>{compactMoney.format(totalVolume)}</span> visible volume</div>
@@ -1206,13 +1674,13 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
               const profile = composedProfiles[trader.wallet];
               return <article className="followed-profile" key={trader.wallet}>
                 <div className="followed-profile-heading"><button onClick={() => void openTrader(trader.wallet)}><strong>{trader.name}</strong><small>{trader.reason}</small></button><span>{profile ? compactMoney.format(profile.visibleOpenValue) : 'Unavailable'}</span></div>
-                {profile?.positions.slice(0, 6).map((position) => <div className="followed-position" key={`${position.conditionId}-${position.outcome}`}><span><strong>{position.title}</strong><small>{position.outcome} · {formatCents(position.currentPrice)}</small></span><b>{compactMoney.format(position.currentValue)}</b></div>)}
+                {profile?.positions.slice(0, 6).map((position) => <button className="followed-position" onClick={() => void openMarketByConditionId(position.conditionId)} key={`${position.conditionId}-${position.outcome}`}><span><strong>{position.title}</strong><small>{position.outcome} · {formatCents(position.currentPrice)}</small></span><b>{compactMoney.format(position.currentValue)}</b></button>)}
               </article>;
             })}
           </section>
         )}
         {!loading && visibleMarkets.length === 0 && !composedView?.sections.some((section) => section.type === 'trader_positions') && (
-          <div className="empty-state"><Search /><h2>{watchlistOnly ? 'Your watchlist is empty' : 'No live markets found'}</h2><p>{watchlistOnly ? 'Open a market and save it from the detail drawer.' : 'Try a broader topic, like politics, crypto, or sports.'}</p><Button onClick={() => watchlistOnly ? setWatchlistOnly(false) : void runSearch('')}>{watchlistOnly ? 'Browse markets' : 'Back to trending'}</Button></div>
+          <div className="empty-state"><Search /><h2>{watchlistOnly ? 'No saved markets yet' : 'No live markets found'}</h2><p>{watchlistOnly ? 'Open a market and save it from the detail drawer.' : 'Try a broader topic, like politics, crypto, or sports.'}</p><Button onClick={() => watchlistOnly ? setWatchlistOnly(false) : void runSearch('')}>{watchlistOnly ? 'Browse markets' : 'Back to trending'}</Button></div>
         )}
       </section>
 
@@ -1227,7 +1695,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                 <Button className={`watch-market-button state-button ${watchlist.includes(selectedMarket.id) ? 'is-active' : ''}`} variant={watchlist.includes(selectedMarket.id) ? 'secondary' : 'outline'} onClick={() => toggleWatchlist(selectedMarket.id)}>
                   <span key={String(watchlist.includes(selectedMarket.id))} className="state-pop">
                     {watchlist.includes(selectedMarket.id) ? <Check /> : <Star />}
-                    {watchlist.includes(selectedMarket.id) ? 'Watching' : 'Add to watchlist'}
+                    {watchlist.includes(selectedMarket.id) ? 'Saved' : 'Save market'}
                   </span>
                 </Button>
               </SheetHeader>
@@ -1343,7 +1811,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                   <div className="section-label"><span>CURRENT POSITIONS</span><span>SORTED BY VALUE</span></div>
                   <div className="position-list">
                     {selectedTrader.positions.map((position) => (
-                      <button key={`${position.conditionId}-${position.outcome}`} onClick={() => { const match = markets.find((market) => market.conditionId === position.conditionId); if (match) { setSelectedMarket(match); setSelectedTrader(null); setHolders([]); } }}>
+                      <button key={`${position.conditionId}-${position.outcome}`} onClick={() => void openMarketByConditionId(position.conditionId)}>
                         <span className="position-icon">{position.icon ? <img src={position.icon} alt="" /> : 'S'}</span>
                         <span className="position-title"><strong>{position.title}</strong><small>{position.outcome} · avg {Math.round(position.avgPrice * 100)}¢ → {Math.round(position.currentPrice * 100)}¢</small></span>
                         <span className="position-value"><strong>{compactMoney.format(position.currentValue)}</strong>{position.pnl !== null && <small className={position.pnl >= 0 ? 'positive' : 'negative'}>{position.pnl >= 0 ? '+' : ''}{compactMoney.format(position.pnl)}</small>}</span>
