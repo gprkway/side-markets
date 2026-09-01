@@ -24,6 +24,8 @@ type RawMarket = Record<string, unknown> & {
   oneDayPriceChange?: number;
   liquidity?: string | number;
   liquidityNum?: number;
+  active?: boolean;
+  closed?: boolean;
 };
 
 type RawEvent = {
@@ -51,7 +53,7 @@ function numeric(value: unknown): number {
 }
 
 function normalizeMarket(raw: RawMarket, event?: RawEvent): Market | null {
-  if (!raw.id || !raw.conditionId) return null;
+  if (!raw.id || !raw.conditionId || raw.active === false || raw.closed === true) return null;
   const labels = parseList(raw.outcomes);
   const prices = parseList(raw.outcomePrices);
   const outcomes = labels.map((label, index) => ({
@@ -80,6 +82,37 @@ function normalizeMarket(raw: RawMarket, event?: RawEvent): Market | null {
   };
 }
 
+const searchStopWords = new Set([
+  'a', 'after', 'an', 'and', 'at', 'be', 'before', 'by', 'for', 'from', 'in', 'is', 'of', 'on', 'or', 'the', 'to', 'will', 'with',
+]);
+
+function searchTokens(value: string) {
+  return value.toLowerCase()
+    .replace(/\bfederal reserve\b/g, 'fed')
+    .replace(/\bartificial intelligence\b/g, 'ai')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .filter((token) => token.length > 1 && !searchStopWords.has(token));
+}
+
+function searchScore(market: Market, query: string) {
+  const queryTokens = [...new Set(searchTokens(query))];
+  const questionTokens = new Set(searchTokens(market.question));
+  const supportingTokens = new Set(searchTokens(`${market.category} ${market.description}`));
+  const questionMatches = queryTokens.filter((token) => questionTokens.has(token)).length;
+  const supportingMatches = queryTokens.filter((token) => supportingTokens.has(token)).length;
+  const matchedTokens = queryTokens.filter((token) => questionTokens.has(token) || supportingTokens.has(token)).length;
+  const exactPhrase = market.question.toLowerCase().includes(query.toLowerCase()) ? 4 : 0;
+  const lexical = exactPhrase + questionMatches * 3 + supportingMatches;
+  const activity = Math.log10(Math.max(1, market.volume24h + market.liquidity)) / 10;
+  return {
+    lexical,
+    matchedTokens,
+    requiredMatches: Math.min(queryTokens.length, Math.max(1, Math.ceil(queryTokens.length * 0.6))),
+    total: lexical + activity,
+  };
+}
+
 export async function getMarkets(limit = 18): Promise<Market[]> {
   const params = new URLSearchParams({
     limit: String(limit),
@@ -100,25 +133,30 @@ export async function searchMarkets(query: string, limit = 18): Promise<Market[]
   const cleanQuery = query.trim();
   if (!cleanQuery) return getMarkets(limit);
 
-  const params = new URLSearchParams({
-    q: cleanQuery,
-    limit_per_type: String(Math.min(limit, 20)),
-  });
-  const response = await fetch(`${GAMMA_API}/public-search?${params}`, {
-    cache: 'no-store',
-  });
-  if (!response.ok) throw new Error('Unable to search Polymarket markets');
-  const payload = (await response.json()) as { events?: RawEvent[]; markets?: RawMarket[] };
-  const eventMarkets = (payload.events ?? []).flatMap((event) =>
+  const canonicalQuery = searchTokens(cleanQuery).join(' ');
+  const queries = [...new Set([cleanQuery, canonicalQuery].filter(Boolean))];
+  const payloads = await Promise.all(queries.map(async (searchQuery) => {
+    const params = new URLSearchParams({
+      q: searchQuery,
+      limit_per_type: String(Math.min(limit, 20)),
+    });
+    const response = await fetch(`${GAMMA_API}/public-search?${params}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Unable to search Polymarket markets');
+    return (await response.json()) as { events?: RawEvent[]; markets?: RawMarket[] };
+  }));
+  const eventMarkets = payloads.flatMap((payload) => (payload.events ?? []).flatMap((event) =>
     (event.markets ?? []).map((market) => normalizeMarket(market, event)),
-  );
-  const directMarkets = (payload.markets ?? []).map((market) => normalizeMarket(market));
+  ));
+  const directMarkets = payloads.flatMap((payload) => (payload.markets ?? []).map((market) => normalizeMarket(market)));
   const unique = new Map<string, Market>();
   [...directMarkets, ...eventMarkets].forEach((market) => {
     if (market && market.outcomes.length >= 2) unique.set(market.id, market);
   });
-  return [...unique.values()]
-    .sort((a, b) => b.volume24h - a.volume24h)
+  const scored = [...unique.values()].map((market) => ({ market, score: searchScore(market, cleanQuery) }));
+  const relevant = scored.filter(({ score }) => score.matchedTokens >= score.requiredMatches);
+  return relevant
+    .sort((a, b) => b.score.total - a.score.total || b.market.volume24h - a.market.volume24h)
+    .map(({ market }) => market)
     .slice(0, limit);
 }
 

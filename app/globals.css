@@ -265,6 +265,7 @@ button, input { font: inherit; } button { color: inherit; }
 .history-section { margin-top: 32px; }
 .position-empty { padding: 22px; color: #748087; font-size: 11px; text-align: center; }
 .comments-section { margin-top: 30px; }
+.comment-safety { margin: -3px 0 10px; color: #7b858b; font-size: 10px; line-height: 1.45; }
 .comment-filter-row { display: flex; gap: 6px; margin-bottom: 10px; }
 .comment-filter-row button { padding: 6px 9px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: #78848b; cursor: pointer; font-size: 10px; }
 .comment-filter-row button.active { color: #fff; border-color: var(--border-strong); background: var(--panel-raised); }

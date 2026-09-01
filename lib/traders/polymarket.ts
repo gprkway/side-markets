@@ -67,9 +67,15 @@ function dedupePositions(rawPositions: Array<Record<string, unknown>>, closed: b
   return [...unique.values()];
 }
 
-export async function getTraderProfile(wallet: string): Promise<TraderProfile> {
+export async function getTraderProfile(wallet: string, positionLimit = 12): Promise<TraderProfile> {
   const positionsParams = new URLSearchParams({
-    user: wallet, limit: '500', sizeThreshold: '0.01', sortBy: 'CURRENT', sortDirection: 'DESC',
+    user: wallet,
+    limit: '500',
+    sizeThreshold: '0.01',
+    redeemable: 'false',
+    includeArchived: 'false',
+    sortBy: 'CURRENT',
+    sortDirection: 'DESC',
   });
   const historyParams = new URLSearchParams({
     user: wallet, limit: '12', sortBy: 'REALIZEDPNL', sortDirection: 'DESC',
@@ -88,7 +94,7 @@ export async function getTraderProfile(wallet: string): Promise<TraderProfile> {
     : [];
   const positions = dedupePositions(positionsRaw, false)
     .sort((a, b) => b.currentValue - a.currentValue)
-    .slice(0, 12);
+    .slice(0, Math.max(1, Math.min(500, positionLimit)));
   const history = dedupePositions(historyRaw, true)
     .filter((position) => position.pnl !== null)
     .sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0))
