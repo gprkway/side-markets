@@ -17,6 +17,11 @@ Side is a WebMCP-native prediction-market browser designed for a human and their
 - Device-local programmable Watches for trader consensus, disagreement, and newly observed positions
 - Snapshot-backed Watch evaluation on Side load, refresh, or explicit “Check now” — no fake background monitoring
 - Automatically saved composed research workspaces that human clicks and WebMCP can refine together
+- Exact trader-position cell selection shared between the human, Codex, and the live desk
+- Bounded relationship research with factual lane progress, revision checks, and cancellation
+- Provenance-backed Codex findings that Side validates against live market/position IDs
+- Human Pin/Reject controls for agent-created research objects
+- Selection-aware Watch handoff that keeps the research desk mounted
 - Real Polymarket event comments with exact outcome-token and visible-holder matching when supported
 - Evidence-backed YES/NO argument rendering that preserves original comment IDs
 - Human-confirmed paper-trade preparation; no real execution
@@ -28,19 +33,17 @@ Side is a WebMCP-native prediction-market browser designed for a human and their
 
 The always-available tools include `search_markets`, `compose_market_view`, and `open_market`. Side adds refinement tools while a composed view is active, market and discussion tools while a market drawer is open, holder/follow tools after trader intelligence is loaded, and trader context only while a trader profile is visible. `open_trader_position` can load a trader's real market by condition ID even when it was never in the discovery grid.
 
+Inside a trader comparison, `get_current_research_set` exposes compact semantic state for exact human-selected cells. When a selection exists, the bounded contextual group swaps comparison composition for `research_current_selection` and `render_research_findings`. Research calls validate the research-set ID and revision, show only real request/cache progress, and reject stale work. Findings accept no submitted observations: every entity/evidence reference must resolve against the factual run, and Side renders the observed values itself. Baseline plus contextual tools remain capped at 11 registrations.
+
 When visible or followed trader IDs are available, Codex can call `create_trader_watch` with explicit wallets and deterministic rule primitives. Saved Watches can be reopened, updated in place, paused, checked, and converted into a visible set of matching real markets. Side never interprets fuzzy phrases such as “these traders”; Codex resolves those references from current page context and passes explicit IDs. All mutating tools update the same React state shown to the human.
 
 ### Suggested Site Tools demo
 
-1. “Find consequential non-sports markets moving today.”
-2. Open one manually, then ask: “Who’s in this?”
-3. “Open the strongest visible holder and show me their other positions.”
-4. “Open their largest non-sports position.”
-5. Follow two or three visible traders.
-6. “Watch these traders and show me whenever at least two take the same side in a non-sports market above $10,000.”
-7. “Actually require all three and ignore anything below $25,000.”
-8. “Pause this Watch.” Then: “Turn it back on and show current matches.”
-9. Open a match, save it, and prepare a $100 YES paper trade. The human must confirm in Side.
+1. Start in a three-holder comparison and manually select two opposing position cells.
+2. Ask: “Explain this.” Codex reads the exact selection, runs bounded live research, and writes a validated interpretation into the desk.
+3. Pin the strongest finding and reject another directly in Side.
+4. Ask: “Keep an eye on this.” Codex maps the retained relationship into Side's existing deterministic Watch without leaving the desk.
+5. Optionally open the largest current match and prepare a $100 YES paper trade. The human must confirm in Side.
 
 The current browser API is feature-detected at `document.modelContext`, with a compatibility fallback for `navigator.modelContext`.
 

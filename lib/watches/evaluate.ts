@@ -11,7 +11,7 @@ function positionKey(position: Pick<WatchPositionSnapshot, 'wallet' | 'condition
 }
 
 function looksLikeSports(title: string) {
-  return /\b(sports?|fc|cf|afc|nba|wnba|nfl|nhl|mlb|kbo|ncaa|uefa|atp|wta|formula 1|esports?|counter-strike|soccer|football|tennis|cricket|league|tournament|match|game \d|vs\.?\b|championship)\b/i.test(title);
+  return /\b(sports?|fc|cf|afc|nba|wnba|nfl|nhl|mlb|kbo|ncaa|uefa|atp|wta|formula 1|esports?|counter-strike|soccer|football|tennis|cricket|league|tournament|match|game \d|vs\.?\b|championship|ballon d['’]or)\b/i.test(title);
 }
 
 export function evaluateTraderWatch(
