@@ -167,3 +167,12 @@ export async function getMarketByConditionId(conditionId: string): Promise<Marke
   const raw = (await response.json()) as RawMarket[];
   return raw.length ? normalizeMarket(raw[0], raw[0].events?.[0]) : null;
 }
+
+export async function getMarketsByEventId(eventId: string): Promise<Market[]> {
+  const response = await fetch(`${GAMMA_API}/events/${encodeURIComponent(eventId)}`, { cache: 'no-store' });
+  if (!response.ok) throw new Error('Unable to load Polymarket event');
+  const event = await response.json() as RawEvent;
+  return (event.markets ?? [])
+    .map((market) => normalizeMarket(market, event))
+    .filter(Boolean) as Market[];
+}

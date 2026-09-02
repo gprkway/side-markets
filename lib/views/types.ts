@@ -23,6 +23,31 @@ export type ViewSection = {
   traderWallets?: string[];
 };
 
+export type ComparisonFocus = 'all' | 'overlap' | 'disagreement' | 'single_trader';
+export type ResearchMode = 'trader_comparison' | 'market_comparison';
+export type MarketComparisonBasis = 'exact_event_siblings' | 'selected_comparison_set';
+
+export type ResearchContext = {
+  comparisonId: string;
+  mode: ResearchMode;
+  thesisMarketId: string;
+  thesisConditionId: string;
+  thesisEventId: string | null;
+  thesisQuestion: string;
+  thesisProbability: number;
+  thesisPriceChange24h: number;
+  thesisVolume24h: number;
+  traderWallets: string[];
+  primaryTraderWallet: string | null;
+  minimumPositionValue: number;
+  excludeSports: boolean;
+  focus: ComparisonFocus;
+  marketConditionIds: string[];
+  marketComparisonBasis: MarketComparisonBasis | null;
+  linkedWatchId: string | null;
+  updatedAt: string;
+};
+
 export type SavedView = {
   id: string;
   title: string;
@@ -35,6 +60,7 @@ export type SavedView = {
   sections: ViewSection[];
   sort: string;
   selectedMarketIds: string[];
+  researchContext?: ResearchContext;
 };
 
 export type TransientTraderProfiles = Record<string, TraderProfile>;

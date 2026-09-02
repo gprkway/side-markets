@@ -1,7 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -48,7 +47,16 @@ import type { Market } from '@/lib/markets/types';
 import type { MarketFeed } from '@/lib/markets/feed';
 import type { Holder, TraderProfile } from '@/lib/traders/types';
 import type { MarketComment } from '@/lib/comments/types';
-import type { ComposedTrader, FollowedTrader, SavedView, TransientTraderProfiles } from '@/lib/views/types';
+import type {
+  ComparisonFocus,
+  ComposedTrader,
+  FollowedTrader,
+  MarketComparisonBasis,
+  ResearchContext,
+  SavedView,
+  TransientTraderProfiles,
+} from '@/lib/views/types';
+import { buildTraderComparisonRows, type ComparisonRow } from '@/lib/views/comparison';
 import { evaluateTraderWatch } from '@/lib/watches/evaluate';
 import type { TraderWatch, WatchRelationship } from '@/lib/watches/types';
 
@@ -233,6 +241,142 @@ function MarketCard({
   );
 }
 
+function TraderComparisonDesk({
+  context,
+  traders,
+  rows,
+  sourceRow,
+  linkedWatch,
+  loading,
+  onOpenMarket,
+  onOpenTrader,
+  onCheckWatch,
+  onOpenWatch,
+}: {
+  context: ResearchContext;
+  traders: ComposedTrader[];
+  rows: ComparisonRow[];
+  sourceRow: ComparisonRow | null;
+  linkedWatch: TraderWatch | null;
+  loading: boolean;
+  onOpenMarket: (conditionId: string) => void;
+  onOpenTrader: (wallet: string) => void;
+  onCheckWatch: (watchId: string) => void;
+  onOpenWatch: (watchId: string) => void;
+}) {
+  const disagreement = rows.filter((row) => row.kind === 'disagreement' && row.conditionId !== context.thesisConditionId);
+  const overlap = rows.filter((row) => row.kind === 'overlap' && row.conditionId !== context.thesisConditionId);
+  const unique = rows.filter((row) => row.kind === 'unique' && row.conditionId !== context.thesisConditionId);
+  const primary = context.primaryTraderWallet?.toLowerCase() ?? null;
+  const focusedPositions = primary
+    ? rows.filter((row) => row.conditionId !== context.thesisConditionId && row.cells[primary])
+    : unique;
+  const groups = context.focus === 'disagreement'
+    ? [{ key: 'disagreement', title: 'Disagreements', rows: disagreement, fallback: unique }]
+    : context.focus === 'overlap'
+      ? [{ key: 'overlap', title: 'Overlap', rows: overlap, fallback: unique }]
+      : context.focus === 'single_trader'
+        ? [{ key: 'single', title: 'Other large positions', rows: focusedPositions, fallback: [] }]
+        : [
+          { key: 'disagreement', title: 'Disagreements', rows: disagreement, fallback: [] },
+          { key: 'overlap', title: 'Overlap', rows: overlap, fallback: [] },
+          { key: 'unique', title: 'Other large positions', rows: unique, fallback: [] },
+        ];
+  const gridStyle = {
+    '--trader-count': traders.length,
+    ...(primary ? {
+      gridTemplateColumns: `minmax(260px, 1.65fr) ${traders.map((trader) => trader.wallet.toLowerCase() === primary ? 'minmax(230px, 1.5fr)' : 'minmax(110px, .65fr)').join(' ')}`,
+    } : {}),
+  } as CSSProperties;
+  const renderCell = (row: ComparisonRow, trader: ComposedTrader) => {
+    const cell = row.cells[trader.wallet.toLowerCase()];
+    return <div className={`comparison-cell ${primary === trader.wallet.toLowerCase() ? 'is-primary' : ''}`} key={trader.wallet}>
+      {cell ? <><strong className={cell.outcome.toLowerCase() === 'yes' ? 'positive' : cell.outcome.toLowerCase() === 'no' ? 'negative' : ''}>{cell.outcome}</strong><span>{compactMoney.format(cell.currentValue)}</span></> : <span className="comparison-empty">—</span>}
+    </div>;
+  };
+  const renderRow = (row: ComparisonRow, source = false) => <div className={`comparison-matrix-row ${source ? 'source-row' : ''}`} style={gridStyle} key={`${source ? 'source-' : ''}${row.conditionId}`}>
+    <button className="comparison-market-cell" onClick={() => onOpenMarket(row.conditionId)}>
+      <strong>{source ? 'Current market' : row.title}</strong>
+      <span>{source ? context.thesisQuestion : `${row.walletCount} trader${row.walletCount === 1 ? '' : 's'} · ${compactMoney.format(row.combinedValue)}`}</span>
+    </button>
+    {traders.map((trader) => renderCell(row, trader))}
+  </div>;
+
+  return <section className={`live-desk trader-comparison ${context.focus === 'single_trader' ? 'single-focus' : ''}`} aria-busy={loading}>
+    <div className="thesis-band">
+      <span>FROM</span>
+      <div><strong>{context.thesisQuestion}</strong><small>{formatProbability(context.thesisProbability)} YES · {formatMovement(context.thesisPriceChange24h)} · {compactMoney.format(context.thesisVolume24h)} today</small></div>
+      <b>COMPARING HOLDERS FROM THIS MARKET</b>
+    </div>
+    {linkedWatch && <aside className="watch-continuity">
+      <span className={`watch-process-dot ${linkedWatch.status}`} />
+      <div><small>{watchRelationshipLabel[linkedWatch.relationship].toUpperCase()} WATCH</small><strong>{linkedWatch.traderWallets.length} traders · {compactMoney.format(linkedWatch.minimumPositionValue)} minimum · {linkedWatch.excludeSports ? 'no sports' : 'all categories'}</strong><span>{linkedWatch.status} · {formatWatchCheckedAt(linkedWatch.lastEvaluatedAt)}</span></div>
+      <button onClick={() => onCheckWatch(linkedWatch.id)}>{linkedWatch.matches.length} matches · Check now</button>
+      <button onClick={() => onOpenWatch(linkedWatch.id)}>Open Watch</button>
+    </aside>}
+    <div className="comparison-scroll">
+      <div className="comparison-matrix">
+        <div className="comparison-matrix-head" style={gridStyle}>
+          <span>MARKET</span>
+          {traders.map((trader, index) => <button className={primary === trader.wallet.toLowerCase() ? 'is-primary' : ''} onClick={() => onOpenTrader(trader.wallet)} key={trader.wallet}>
+            <small>{String.fromCharCode(65 + index)}</small><strong>{trader.name}</strong><span>{compactMoney.format(rows.reduce((sum, row) => sum + (row.cells[trader.wallet.toLowerCase()]?.currentValue ?? 0), 0))} visible</span>
+          </button>)}
+        </div>
+        {sourceRow ? renderRow(sourceRow, true) : <div className="comparison-source-empty">Source-market exposure is unavailable in the current position snapshot.</div>}
+        {groups.map((group) => {
+          const displayed = group.rows.length ? group.rows : group.fallback.slice(0, 6);
+          return <section className="comparison-group" key={group.key}>
+            <div className="comparison-group-title"><span>{group.title}</span><b>{group.rows.length}</b></div>
+            {!group.rows.length && group.fallback.length > 0 && <p>No {group.title.toLowerCase()} above {compactMoney.format(context.minimumPositionValue)}. Showing unique exposure for context.</p>}
+            {displayed.slice(0, group.key === 'unique' || group.key === 'single' ? 12 : 10).map((row) => renderRow(row))}
+            {!displayed.length && <p>No qualifying positions above {compactMoney.format(context.minimumPositionValue)}.</p>}
+          </section>;
+        })}
+      </div>
+    </div>
+    {loading && <div className="desk-loading"><LoaderCircle className="spin" /> Refreshing live positions…</div>}
+  </section>;
+}
+
+function MarketComparisonDesk({
+  context,
+  markets,
+  profiles,
+  holders,
+  linkedWatch,
+  onOpenMarket,
+}: {
+  context: ResearchContext;
+  markets: Market[];
+  profiles: TraderProfile[];
+  holders: Record<string, Holder[]>;
+  linkedWatch: TraderWatch | null;
+  onOpenMarket: (conditionId: string) => void;
+}) {
+  const sourceHolders = new Set((holders[context.thesisConditionId] ?? []).map((holder) => holder.wallet.toLowerCase()));
+  return <section className="live-desk market-comparison">
+    <div className="thesis-band">
+      <span>THESIS</span>
+      <div><strong>{context.thesisQuestion}</strong><small>{formatProbability(context.thesisProbability)} YES · {formatMovement(context.thesisPriceChange24h)} · {compactMoney.format(context.thesisVolume24h)} today</small></div>
+      <b>{context.marketComparisonBasis === 'exact_event_siblings' ? 'EXACT EVENT SIBLINGS' : 'SELECTED COMPARISON SET'}</b>
+    </div>
+    <div className="market-comparison-table">
+      <div className="market-comparison-head"><span>MARKET</span><span>PROBABILITY</span><span>24H MOVE</span><span>24H VOLUME</span><span>LIQUIDITY</span><span>TRADER EXPOSURE</span><span>HOLDER OVERLAP</span><span>WATCH</span></div>
+      {markets.map((market) => {
+        const exposure = profiles.reduce((sum, profile) => sum + (profile.positions.find((position) => position.conditionId === market.conditionId)?.currentValue ?? 0), 0);
+        const marketHolders = holders[market.conditionId] ?? [];
+        const holderOverlap = market.conditionId === context.thesisConditionId
+          ? marketHolders.length
+          : marketHolders.filter((holder) => sourceHolders.has(holder.wallet.toLowerCase())).length;
+        const watched = linkedWatch?.matches.some((match) => match.conditionId === market.conditionId) ?? false;
+        return <button className="market-comparison-row" onClick={() => onOpenMarket(market.conditionId)} key={market.conditionId}>
+          <strong>{market.question}</strong><span>{formatProbability(market.outcomes[0]?.probability ?? 0)}</span><span className={market.priceChange24h >= 0 ? 'positive' : 'negative'}>{formatMovement(market.priceChange24h)}</span><span>{compactMoney.format(market.volume24h)}</span><span>{market.liquidity > 0 ? compactMoney.format(market.liquidity) : '—'}</span><span>{exposure > 0 ? compactMoney.format(exposure) : '—'}</span><span>{holderOverlap || '—'}</span><span>{watched ? 'MATCH' : '—'}</span>
+        </button>;
+      })}
+    </div>
+  </section>;
+}
+
 export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [markets, setMarkets] = useState(initialFeed.markets);
   const [query, setQuery] = useState('');
@@ -262,6 +406,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [savedViewsOpen, setSavedViewsOpen] = useState(false);
   const [composedView, setComposedView] = useState<SavedView | null>(null);
   const [composedProfiles, setComposedProfiles] = useState<TransientTraderProfiles>({});
+  const [comparisonMarkets, setComparisonMarkets] = useState<Market[]>([]);
+  const [comparisonHolders, setComparisonHolders] = useState<Record<string, Holder[]>>({});
+  const [comparisonLoading, setComparisonLoading] = useState(false);
   const [followedTraders, setFollowedTraders] = useState<FollowedTrader[]>([]);
   const [comments, setComments] = useState<MarketComment[]>([]);
   const [commentsOpen, setCommentsOpen] = useState(false);
@@ -270,29 +417,16 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [commentArguments, setCommentArguments] = useState<CommentArguments | null>(null);
   const [agentAction, setAgentAction] = useState<AgentAction | null>(null);
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('market');
-  const [drawerDirection, setDrawerDirection] = useState<'forward' | 'back'>('forward');
   const agentActionTimer = useRef<number | null>(null);
   const watchRefreshStarted = useRef(false);
   const marketsRef = useRef(markets);
   const baselineActionsRef = useRef<BaselineActions | null>(null);
   const watchesRef = useRef<TraderWatch[]>([]);
+  const comparisonProfilesRef = useRef<TransientTraderProfiles>({});
   const returnDrawerMode = useRef<Exclude<DrawerMode, 'trader'>>('market');
 
-  const commitMotion = useCallback((kind: string, update: () => void) => {
-    const root = document.documentElement;
-    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const transitionDocument = document as Document & {
-      startViewTransition?: (callback: () => void) => { finished: Promise<void> };
-    };
-    if (prefersReducedMotion || !transitionDocument.startViewTransition) {
-      update();
-      return;
-    }
-    root.dataset.sideMotion = kind;
-    const transition = transitionDocument.startViewTransition(() => flushSync(update));
-    void transition.finished.finally(() => {
-      if (root.dataset.sideMotion === kind) delete root.dataset.sideMotion;
-    });
+  const commitMotion = useCallback((_kind: string, update: () => void) => {
+    update();
   }, []);
 
   const reportAgentAction = useCallback((message: string) => {
@@ -321,11 +455,37 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       wallet: selectedTrader.wallet,
       name: selectedTrader.name || selectedTrader.pseudonym || `${selectedTrader.wallet.slice(0, 8)}…`,
     });
+    composedView?.traders.forEach((trader) => unique.set(trader.wallet.toLowerCase(), {
+      wallet: trader.wallet,
+      name: trader.name,
+    }));
     return [...unique.values()];
-  }, [followedTraders, holders, selectedTrader]);
+  }, [composedView, followedTraders, holders, selectedTrader]);
+  const researchContext = composedView?.researchContext ?? null;
   const currentWatch = useMemo(
     () => watches.find((watch) => watch.id === currentWatchId) ?? null,
     [currentWatchId, watches],
+  );
+  const comparisonProfiles = useMemo(
+    () => researchContext
+      ? researchContext.traderWallets
+        .map((wallet) => composedProfiles[wallet.toLowerCase()] ?? composedProfiles[wallet])
+        .filter(Boolean) as TraderProfile[]
+      : [],
+    [composedProfiles, researchContext],
+  );
+  const comparisonRows = useMemo(
+    () => researchContext
+      ? buildTraderComparisonRows(comparisonProfiles, researchContext.minimumPositionValue, researchContext.excludeSports)
+      : [],
+    [comparisonProfiles, researchContext],
+  );
+  const sourceComparisonRow = useMemo(
+    () => researchContext
+      ? buildTraderComparisonRows(comparisonProfiles, 0, false)
+        .find((row) => row.conditionId === researchContext.thesisConditionId) ?? null
+      : null,
+    [comparisonProfiles, researchContext],
   );
   const toolContext: ToolContext = currentWatch && watchesOpen
     ? 'watch'
@@ -344,8 +504,22 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     } catch {
       stored = [];
     }
-    const incomingIds = new Set(next.map((watch) => watch.id));
-    const merged = [...next, ...stored.filter((watch) => !incomingIds.has(watch.id))];
+    const mergedById = new Map<string, TraderWatch>();
+    [...stored, ...next].forEach((watch) => {
+      const existing = mergedById.get(watch.id);
+      if (!existing || new Date(watch.updatedAt).getTime() >= new Date(existing.updatedAt).getTime()) {
+        mergedById.set(watch.id, watch);
+      }
+    });
+    const nextOrder = next.map((watch) => watch.id);
+    const merged = [...mergedById.values()].sort((a, b) => {
+      const aIndex = nextOrder.indexOf(a.id);
+      const bIndex = nextOrder.indexOf(b.id);
+      if (aIndex >= 0 && bIndex >= 0) return aIndex - bIndex;
+      if (aIndex >= 0) return -1;
+      if (bIndex >= 0) return 1;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
     watchesRef.current = merged;
     setWatches(merged);
     localStorage.setItem(TRADER_WATCHES_KEY, JSON.stringify(merged));
@@ -482,7 +656,6 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       setCommentsOpen(false);
       setCommentArguments(null);
       setDrawerMode('market');
-      setDrawerDirection('forward');
       setWatchesOpen(false);
       returnDrawerMode.current = 'market';
     });
@@ -512,7 +685,6 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       setCommentsOpen(false);
       setCommentArguments(null);
       setDrawerMode('market');
-      setDrawerDirection('back');
       setWatchesOpen(false);
       returnDrawerMode.current = 'market';
     });
@@ -535,7 +707,6 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         setHolders(payload.holders);
         setCommentsOpen(false);
         setDrawerMode('holders');
-        setDrawerDirection('forward');
         returnDrawerMode.current = 'holders';
       });
       return {
@@ -565,7 +736,6 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       commitMotion('drawer-forward', () => {
         setSelectedTrader(payload.trader);
         setDrawerMode('trader');
-        setDrawerDirection('forward');
       });
       return {
         trader: {
@@ -602,6 +772,19 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     setSavedViews((current) => {
       const next = [view, ...current.filter((candidate) => candidate.id !== view.id)];
       localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const updatePersistedView = useCallback((update: (view: SavedView) => SavedView) => {
+    setComposedView((current) => {
+      if (!current) return current;
+      const next = update(current);
+      setSavedViews((saved) => {
+        const merged = [next, ...saved.filter((candidate) => candidate.id !== next.id)];
+        localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(merged));
+        return merged;
+      });
       return next;
     });
   }, []);
@@ -670,11 +853,22 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     try {
       const evaluated = await evaluateWatchDefinition(watch);
       const next = [evaluated, ...watchesRef.current];
+      const attachToDesk = Boolean(researchContext?.mode === 'trader_comparison'
+        && traderWallets.every((wallet) => researchContext.traderWallets.some((candidate) => candidate.toLowerCase() === wallet.toLowerCase())));
       commitMotion('compose', () => {
         persistWatches(next);
         setCurrentWatchId(evaluated.id);
-        setWatchesOpen(true);
+        setWatchesOpen(!attachToDesk);
         setSavedViewsOpen(false);
+        if (attachToDesk) updatePersistedView((view) => ({
+          ...view,
+          updatedAt: now,
+          researchContext: view.researchContext ? {
+            ...view.researchContext,
+            linkedWatchId: evaluated.id,
+            updatedAt: now,
+          } : undefined,
+        }));
       });
       return {
         watch: {
@@ -690,43 +884,55 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         match_count: evaluated.matches.length,
         baseline_created: relationship === 'new_position',
         evaluation_mode: 'Checked when Side loads, refreshes, or the human requests Check now.',
+        attached_to_comparison: attachToDesk,
         ui_changed: true,
       };
     } catch {
       return { error: 'Could not evaluate real trader positions for this Watch.', ui_changed: false };
     }
-  }, [availableWatchTraders, commitMotion, evaluateWatchDefinition, persistWatches]);
+  }, [availableWatchTraders, commitMotion, evaluateWatchDefinition, persistWatches, researchContext, updatePersistedView]);
 
   const updateCurrentWatch = useCallback(async (input: Record<string, unknown>) => {
     if (!currentWatch) return { error: 'No Watch is currently open.', ui_changed: false };
+    let storedWatch: TraderWatch | undefined;
+    try {
+      const stored = JSON.parse(localStorage.getItem(TRADER_WATCHES_KEY) ?? '[]') as TraderWatch[];
+      storedWatch = stored.find((watch) => watch.id === currentWatch.id);
+    } catch {
+      storedWatch = undefined;
+    }
+    const baseWatch = storedWatch
+      && new Date(storedWatch.updatedAt).getTime() > new Date(currentWatch.updatedAt).getTime()
+      ? storedWatch
+      : currentWatch;
     const available = new Map(availableWatchTraders.map((trader) => [trader.wallet.toLowerCase(), trader]));
-    currentWatch.traderWallets.forEach((wallet) => {
+    baseWatch.traderWallets.forEach((wallet) => {
       if (!available.has(wallet.toLowerCase())) available.set(wallet.toLowerCase(), { wallet, name: `${wallet.slice(0, 8)}…` });
     });
     const requestedWallets = Array.isArray(input.trader_wallets) ? input.trader_wallets.map(String) : null;
     const traderWallets = requestedWallets
       ? [...new Set(requestedWallets.map((wallet) => available.get(wallet.toLowerCase())?.wallet).filter(Boolean) as string[])]
-      : currentWatch.traderWallets;
+      : baseWatch.traderWallets;
     const relationship = ['same_side', 'opposite_sides', 'new_position'].includes(String(input.relationship))
       ? input.relationship as WatchRelationship
-      : currentWatch.relationship;
+      : baseWatch.relationship;
     const requiredTraders = relationship === 'new_position' ? 1 : 2;
     if (traderWallets.length < requiredTraders) {
       return { error: `${watchRelationshipLabel[relationship]} watches require at least ${requiredTraders} traders.`, ui_changed: false };
     }
-    const status = input.status === 'paused' || input.status === 'active' ? input.status : currentWatch.status;
+    const status = input.status === 'paused' || input.status === 'active' ? input.status : baseWatch.status;
     const updated: TraderWatch = {
-      ...currentWatch,
-      name: typeof input.name === 'string' && input.name.trim() ? input.name.trim().slice(0, 80) : currentWatch.name,
+      ...baseWatch,
+      name: typeof input.name === 'string' && input.name.trim() ? input.name.trim().slice(0, 80) : baseWatch.name,
       traderWallets,
       relationship,
       minimumTraderOverlap: relationship === 'new_position'
         ? 1
-        : Math.max(2, Math.min(traderWallets.length, Number(input.minimum_trader_overlap) || currentWatch.minimumTraderOverlap)),
+        : Math.max(2, Math.min(traderWallets.length, Number(input.minimum_trader_overlap) || baseWatch.minimumTraderOverlap)),
       minimumPositionValue: input.minimum_position_value === undefined
-        ? currentWatch.minimumPositionValue
+        ? baseWatch.minimumPositionValue
         : Math.max(0, Number(input.minimum_position_value) || 0),
-      excludeSports: typeof input.exclude_sports === 'boolean' ? input.exclude_sports : currentWatch.excludeSports,
+      excludeSports: typeof input.exclude_sports === 'boolean' ? input.exclude_sports : baseWatch.excludeSports,
       status,
       updatedAt: new Date().toISOString(),
     };
@@ -735,7 +941,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       const next = watchesRef.current.map((watch) => watch.id === evaluated.id ? evaluated : watch);
       commitMotion('refine', () => {
         persistWatches(next);
-        setWatchesOpen(true);
+        setWatchesOpen(researchContext?.linkedWatchId === evaluated.id ? false : true);
       });
       return {
         watch_id: evaluated.id,
@@ -752,14 +958,14 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     } catch {
       return { error: 'The Watch was not changed because live trader data could not be checked.', ui_changed: false };
     }
-  }, [availableWatchTraders, commitMotion, currentWatch, evaluateWatchDefinition, persistWatches]);
+  }, [availableWatchTraders, commitMotion, currentWatch, evaluateWatchDefinition, persistWatches, researchContext]);
 
   const checkWatchNow = useCallback(async (watchId: string) => {
     const watch = watchesRef.current.find((candidate) => candidate.id === watchId);
     if (!watch) return { error: 'Watch not found.', ui_changed: false };
     if (watch.status === 'paused') {
       setCurrentWatchId(watch.id);
-      setWatchesOpen(true);
+      setWatchesOpen(researchContext?.linkedWatchId === watch.id ? false : true);
       return { watch_id: watch.id, status: 'paused', match_count: watch.matches.length, ui_changed: true };
     }
     try {
@@ -768,7 +974,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       commitMotion('refine', () => {
         persistWatches(next);
         setCurrentWatchId(watch.id);
-        setWatchesOpen(true);
+        setWatchesOpen(researchContext?.linkedWatchId === watch.id ? false : true);
         setSavedViewsOpen(false);
       });
       return {
@@ -781,7 +987,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     } catch {
       return { error: 'Could not refresh this Watch from live trader positions.', ui_changed: false };
     }
-  }, [commitMotion, evaluateWatchDefinition, persistWatches]);
+  }, [commitMotion, evaluateWatchDefinition, persistWatches, researchContext]);
 
   useEffect(() => {
     if (!watchesHydrated || watchRefreshStarted.current) return;
@@ -813,7 +1019,6 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         setPositionedCommentsOnly(false);
         setCommentArguments(null);
         setDrawerMode('comments');
-        setDrawerDirection('forward');
         returnDrawerMode.current = 'comments';
       });
       const holderWallets = new Set(holders.map((holder) => holder.wallet.toLowerCase()));
@@ -1004,19 +1209,271 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       setComposedView(view);
       setSelectedMarketIds(view.selectedMarketIds);
       setSavedViewsOpen(false);
+      setCurrentWatchId(view.researchContext?.linkedWatchId ?? null);
+      setWatchesOpen(false);
     });
-    const needsProfiles = view.sections.some((section) => section.type === 'trader_positions');
+    const needsProfiles = view.sections.some((section) => section.type === 'trader_positions') || Boolean(view.researchContext?.traderWallets.length);
     if (!needsProfiles) {
       setComposedProfiles({});
       return;
     }
     const results = await Promise.all(view.traders.map(async (trader) => {
-      const response = await fetch(`/api/traders?wallet=${encodeURIComponent(trader.wallet)}`);
+      const response = await fetch(`/api/traders?wallet=${encodeURIComponent(trader.wallet)}&position_limit=${view.researchContext ? '500' : '12'}`);
       if (!response.ok) return null;
       return (await response.json() as { trader: TraderProfile }).trader;
     }));
-    setComposedProfiles(Object.fromEntries(results.filter(Boolean).map((profile) => [(profile as TraderProfile).wallet, profile as TraderProfile])));
+    const profileMap = Object.fromEntries(results.filter(Boolean).map((profile) => [(profile as TraderProfile).wallet.toLowerCase(), profile as TraderProfile]));
+    comparisonProfilesRef.current = profileMap;
+    setComposedProfiles(profileMap);
+    if (view.researchContext?.mode === 'market_comparison') {
+      const loaded = (await Promise.all(view.researchContext.marketConditionIds.map(async (conditionId) => {
+        const existing = marketsRef.current.find((market) => market.conditionId === conditionId);
+        if (existing) return existing;
+        const response = await fetch(`/api/markets?condition=${encodeURIComponent(conditionId)}`);
+        return response.ok ? (await response.json() as { market: Market }).market : null;
+      }))).filter(Boolean) as Market[];
+      setComparisonMarkets(loaded);
+      marketsRef.current = [...loaded, ...marketsRef.current.filter((market) => !loaded.some((candidate) => candidate.id === market.id))];
+    }
   }, [commitMotion]);
+
+  const composeTraderComparison = useCallback(async (input: Record<string, unknown>) => {
+    const requested = Array.isArray(input.trader_wallets)
+      ? [...new Set(input.trader_wallets.map(String).map((wallet) => wallet.toLowerCase()))]
+      : [];
+    if (requested.length < 2 || requested.length > 4) {
+      return { error: 'Trader comparison requires 2 to 4 explicit visible wallet IDs.', ui_changed: false };
+    }
+    const available = new Map(availableWatchTraders.map((trader) => [trader.wallet.toLowerCase(), trader]));
+    let wallets = requested.map((wallet) => available.get(wallet)?.wallet).filter(Boolean) as string[];
+    if (wallets.length !== requested.length) {
+      return { error: 'Every wallet must be present in the current holder or comparison context.', ui_changed: false };
+    }
+    const focus = ['all', 'overlap', 'disagreement', 'single_trader'].includes(String(input.focus))
+      ? input.focus as ComparisonFocus
+      : researchContext?.focus ?? 'all';
+    const primaryRequested = typeof input.primary_wallet === 'string' ? input.primary_wallet.toLowerCase() : '';
+    const primaryWallet = focus === 'single_trader'
+      ? wallets.find((wallet) => wallet.toLowerCase() === primaryRequested) ?? null
+      : null;
+    if (focus === 'single_trader' && !primaryWallet) {
+      return { error: 'single_trader focus requires an explicit wallet from this comparison.', ui_changed: false };
+    }
+    const minimumPositionValue = input.minimum_position_value === undefined
+      ? researchContext?.minimumPositionValue ?? 0
+      : Math.max(0, Number(input.minimum_position_value) || 0);
+    const excludeSports = typeof input.exclude_sports === 'boolean'
+      ? input.exclude_sports
+      : researchContext?.excludeSports ?? true;
+    const sameWallets = Boolean(researchContext
+      && wallets.length === researchContext.traderWallets.length
+      && wallets.every((wallet) => researchContext.traderWallets.some((candidate) => candidate.toLowerCase() === wallet.toLowerCase())));
+    if (sameWallets && researchContext) wallets = [...researchContext.traderWallets];
+    const cache = comparisonProfilesRef.current;
+    const canReuse = sameWallets && wallets.every((wallet) => cache[wallet.toLowerCase()]);
+    setComparisonLoading(true);
+    try {
+      const profiles = canReuse
+        ? wallets.map((wallet) => cache[wallet.toLowerCase()])
+        : (await Promise.all(wallets.map(async (wallet) => {
+          const response = await fetch(`/api/traders?wallet=${encodeURIComponent(wallet)}&position_limit=500`);
+          return response.ok ? (await response.json() as { trader: TraderProfile }).trader : null;
+        }))).filter(Boolean) as TraderProfile[];
+      if (profiles.length < 2) return { error: 'At least two live trader profiles are required.', ui_changed: false };
+
+      const thesis = selectedMarket ?? (researchContext ? {
+        id: researchContext.thesisMarketId,
+        conditionId: researchContext.thesisConditionId,
+        eventId: researchContext.thesisEventId,
+        question: researchContext.thesisQuestion,
+        outcomes: [{ label: 'Yes', probability: researchContext.thesisProbability }],
+        priceChange24h: researchContext.thesisPriceChange24h,
+        volume24h: researchContext.thesisVolume24h,
+      } : null);
+      if (!thesis) return { error: 'Open a market and inspect its holders before composing a trader comparison.', ui_changed: false };
+
+      const now = new Date().toISOString();
+      const comparisonId = sameWallets && researchContext ? researchContext.comparisonId : crypto.randomUUID();
+      const context: ResearchContext = {
+        comparisonId,
+        mode: 'trader_comparison',
+        thesisMarketId: thesis.id,
+        thesisConditionId: thesis.conditionId,
+        thesisEventId: thesis.eventId,
+        thesisQuestion: thesis.question,
+        thesisProbability: thesis.outcomes[0]?.probability ?? 0,
+        thesisPriceChange24h: thesis.priceChange24h,
+        thesisVolume24h: thesis.volume24h,
+        traderWallets: wallets,
+        primaryTraderWallet: primaryWallet,
+        minimumPositionValue,
+        excludeSports,
+        focus,
+        marketConditionIds: researchContext?.marketConditionIds ?? [],
+        marketComparisonBasis: researchContext?.marketComparisonBasis ?? null,
+        linkedWatchId: researchContext?.linkedWatchId ?? null,
+        updatedAt: now,
+      };
+      const profileMap = Object.fromEntries(profiles.map((profile) => [profile.wallet.toLowerCase(), profile]));
+      const previous = sameWallets ? composedView : null;
+      const traders: ComposedTrader[] = wallets.map((wallet) => {
+        const profile = profileMap[wallet.toLowerCase()];
+        const visible = available.get(wallet.toLowerCase());
+        return {
+          wallet,
+          name: profile?.name || profile?.pseudonym || visible?.name || `${wallet.slice(0, 8)}…${wallet.slice(-5)}`,
+          reason: 'Notable holder from the source market',
+          marketId: thesis.id,
+        };
+      });
+      const view: SavedView = {
+        id: comparisonId,
+        title: 'Holder conviction desk',
+        intent: `Comparing holders from “${thesis.question}”`,
+        timeframe: 'current',
+        createdAt: previous?.createdAt ?? now,
+        updatedAt: now,
+        marketIds: [],
+        traders,
+        sections: [{ id: `${comparisonId}-comparison`, type: 'disagreement', title: 'Trader comparison', traderWallets: wallets }],
+        sort: 'combined_value',
+        selectedMarketIds: previous?.selectedMarketIds ?? selectedMarketIds,
+        researchContext: context,
+      };
+      const rows = buildTraderComparisonRows(profiles, minimumPositionValue, excludeSports);
+      const relationshipRows = rows.filter((row) => row.conditionId !== context.thesisConditionId);
+      comparisonProfilesRef.current = profileMap;
+      commitMotion('refine', () => {
+        setComposedProfiles(profileMap);
+        setComparisonMarkets([]);
+        setComparisonHolders({});
+        setSelectedMarket(null);
+        setSelectedTrader(null);
+        setWatchesOpen(false);
+        setSavedViewsOpen(false);
+        saveComposedView(view);
+      });
+      return {
+        comparison_id: comparisonId,
+        mode: 'trader_comparison',
+        reused_comparison: sameWallets,
+        reused_cached_profiles: canReuse,
+        trader_wallets: wallets,
+        minimum_position_value: minimumPositionValue,
+        exclude_sports: excludeSports,
+        focus,
+        primary_wallet: primaryWallet,
+        disagreement_count: relationshipRows.filter((row) => row.kind === 'disagreement').length,
+        overlap_count: relationshipRows.filter((row) => row.kind === 'overlap').length,
+        unique_count: relationshipRows.filter((row) => row.kind === 'unique').length,
+        condition_ids: rows.slice(0, 40).map((row) => row.conditionId),
+        ui_changed: true,
+      };
+    } catch {
+      return { error: 'Could not build the comparison from live trader positions.', ui_changed: false };
+    } finally {
+      setComparisonLoading(false);
+    }
+  }, [availableWatchTraders, commitMotion, composedView, researchContext, saveComposedView, selectedMarket, selectedMarketIds]);
+
+  const composeMarketComparison = useCallback(async (input: Record<string, unknown>) => {
+    if (!researchContext) return { error: 'A trader comparison must be open first.', ui_changed: false };
+    if (Array.isArray(input.trader_wallets)) {
+      const requestedWallets = [...new Set(input.trader_wallets.map(String).map((wallet) => wallet.toLowerCase()))];
+      if (requestedWallets.length !== researchContext.traderWallets.length
+        || !requestedWallets.every((wallet) => researchContext.traderWallets.some((candidate) => candidate.toLowerCase() === wallet))) {
+        return { error: 'Market comparison can preserve only the explicit trader set already attached to this desk.', ui_changed: false };
+      }
+    }
+    const basis = input.comparison_basis === 'selected_comparison_set'
+      ? 'selected_comparison_set' as MarketComparisonBasis
+      : 'exact_event_siblings' as MarketComparisonBasis;
+    const anchorConditionId = typeof input.anchor_condition_id === 'string' && input.anchor_condition_id
+      ? input.anchor_condition_id
+      : researchContext.thesisConditionId;
+    const requestedIds = Array.isArray(input.condition_ids)
+      ? [...new Set(input.condition_ids.map(String))].slice(0, 6)
+      : [];
+    if (basis === 'selected_comparison_set' && (requestedIds.length < 2 || requestedIds.length > 6)) {
+      return { error: 'A selected comparison set requires 2 to 6 explicit condition IDs.', ui_changed: false };
+    }
+    setComparisonLoading(true);
+    try {
+      let compared: Market[] = [];
+      if (basis === 'exact_event_siblings') {
+        const anchor = [...marketsRef.current, ...comparisonMarkets].find((market) => market.conditionId === anchorConditionId)
+          ?? await (async () => {
+            const response = await fetch(`/api/markets?condition=${encodeURIComponent(anchorConditionId)}`);
+            return response.ok ? (await response.json() as { market: Market }).market : null;
+          })();
+        if (!anchor?.eventId) return { error: 'The anchor market has no proven Polymarket event relationship.', ui_changed: false };
+        const response = await fetch(`/api/markets?event=${encodeURIComponent(anchor.eventId)}`);
+        if (!response.ok) throw new Error('Event lookup failed');
+        compared = (await response.json() as { markets: Market[] }).markets;
+      } else {
+        compared = (await Promise.all(requestedIds.map(async (conditionId) => {
+          const existing = [...marketsRef.current, ...comparisonMarkets].find((market) => market.conditionId === conditionId);
+          if (existing) return existing;
+          const response = await fetch(`/api/markets?condition=${encodeURIComponent(conditionId)}`);
+          return response.ok ? (await response.json() as { market: Market }).market : null;
+        }))).filter(Boolean) as Market[];
+      }
+      const unique = [...new Map(compared.map((market) => [market.conditionId, market])).values()].slice(0, 6);
+      if (unique.length < 2) return { error: 'Fewer than two live comparable markets were available.', ui_changed: false };
+      const holderEntries = await Promise.all(unique.map(async (market) => {
+        const response = await fetch(`/api/traders?market=${encodeURIComponent(market.conditionId)}`);
+        const payload = response.ok ? await response.json() as { holders: Holder[] } : { holders: [] };
+        return [market.conditionId, payload.holders] as const;
+      }));
+      if (!holderEntries.some(([conditionId]) => conditionId === researchContext.thesisConditionId)) {
+        const sourceResponse = await fetch(`/api/traders?market=${encodeURIComponent(researchContext.thesisConditionId)}`);
+        if (sourceResponse.ok) {
+          const sourcePayload = await sourceResponse.json() as { holders: Holder[] };
+          holderEntries.push([researchContext.thesisConditionId, sourcePayload.holders] as const);
+        }
+      }
+      const now = new Date().toISOString();
+      const context: ResearchContext = {
+        ...researchContext,
+        mode: 'market_comparison',
+        marketConditionIds: unique.map((market) => market.conditionId),
+        marketComparisonBasis: basis,
+        updatedAt: now,
+      };
+      const updated: SavedView = {
+        ...composedView!,
+        title: basis === 'exact_event_siblings' ? 'Exact event siblings' : 'Selected comparison set',
+        updatedAt: now,
+        marketIds: unique.map((market) => market.id),
+        sections: [{ id: `${context.comparisonId}-markets`, type: 'related_markets', title: basis === 'exact_event_siblings' ? 'Exact event siblings' : 'Selected comparison set', marketIds: unique.map((market) => market.id) }],
+        researchContext: context,
+      };
+      marketsRef.current = [...unique, ...marketsRef.current.filter((market) => !unique.some((candidate) => candidate.id === market.id))];
+      commitMotion('refine', () => {
+        setMarkets(marketsRef.current);
+        setComparisonMarkets(unique);
+        setComparisonHolders(Object.fromEntries(holderEntries));
+        setSelectedMarket(null);
+        setSelectedTrader(null);
+        setWatchesOpen(false);
+        saveComposedView(updated);
+      });
+      return {
+        comparison_id: context.comparisonId,
+        mode: 'market_comparison',
+        comparison_basis: basis,
+        condition_ids: unique.map((market) => market.conditionId),
+        market_count: unique.length,
+        trader_wallet_count: context.traderWallets.length,
+        holder_data_available_count: holderEntries.filter(([, values]) => values.length > 0).length,
+        ui_changed: true,
+      };
+    } catch {
+      return { error: 'Could not build the live market comparison.', ui_changed: false };
+    } finally {
+      setComparisonLoading(false);
+    }
+  }, [commitMotion, composedView, comparisonMarkets, researchContext, saveComposedView]);
 
   const renderCommentArguments = useCallback((input: Record<string, unknown>) => {
     const normalize = (value: unknown): CommentArgument[] => Array.isArray(value)
@@ -1162,7 +1619,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       }),
       annotations: { readOnlyHint: true, untrustedContentHint: true },
     }, { signal: controller.signal });
-    void modelContext.registerTool({
+    if (!composedView.researchContext) void modelContext.registerTool({
       name: 'update_market_view',
       title: 'Refine the current saved research view',
       description: 'Mutate the currently visible composed view in place while preserving its identity and explicit human selections.',
@@ -1207,7 +1664,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
-    const canCreateWatch = availableWatchTraders.length > 0 && ['root', 'holders', 'trader'].includes(toolContext);
+    const canCreateWatch = availableWatchTraders.length > 0 && ['root', 'trader'].includes(toolContext);
     const canNavigateWatches = watches.length > 0 && (toolContext === 'root' || toolContext === 'watch');
     if (!modelContext?.registerTool || (!canCreateWatch && !canNavigateWatches)) return;
     const controller = new AbortController();
@@ -1403,8 +1860,146 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         }, (result) => `${Number(result.followed_trader_count) || 0} traders followed`),
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
+    void modelContext.registerTool({
+      name: 'compose_trader_comparison',
+      title: 'Compare visible market holders',
+      description: 'Recompile Side into a persistent comparison desk for 2 to 4 explicit holder wallets, using exact-condition live positions and deterministic filters.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          trader_wallets: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'string', description: 'Exact wallet returned by inspect_market_traders.' } },
+          minimum_position_value: { type: 'number', minimum: 0 },
+          exclude_sports: { type: 'boolean' },
+          focus: { type: 'string', enum: ['all', 'overlap', 'disagreement', 'single_trader'] },
+          primary_wallet: { type: 'string', description: 'Required only for single_trader focus.' },
+        },
+        required: ['trader_wallets'], additionalProperties: false,
+      },
+      execute: (input) => runAgentMutation(
+        () => composeTraderComparison(input),
+        (result) => `${Number(result.disagreement_count) || 0} disagreements · ${Number(result.overlap_count) || 0} overlaps`,
+      ),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
     return () => controller.abort();
-  }, [commitMotion, followedTraders, holders, openTrader, runAgentMutation, selectedMarket, toolContext]);
+  }, [commitMotion, composeTraderComparison, followedTraders, holders, openTrader, runAgentMutation, selectedMarket, toolContext]);
+
+  useEffect(() => {
+    const modelContext = document.modelContext ?? navigator.modelContext;
+    if (!researchContext || toolContext !== 'workspace' || !modelContext?.registerTool) return;
+    const controller = new AbortController();
+    const register = (tool: Parameters<ModelContext['registerTool']>[0]) => modelContext.registerTool(tool, { signal: controller.signal });
+    void register({
+      name: 'compose_trader_comparison',
+      title: 'Refine or restore this trader comparison',
+      description: 'Mutate the same Side comparison desk using explicit retained wallets and deterministic filters. Reuses its comparison ID and cached live positions when possible.',
+      inputSchema: {
+        type: 'object', properties: {
+          trader_wallets: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'string', description: 'Exact wallet from the current workspace context.' } },
+          minimum_position_value: { type: 'number', minimum: 0 },
+          exclude_sports: { type: 'boolean' },
+          focus: { type: 'string', enum: ['all', 'overlap', 'disagreement', 'single_trader'] },
+          primary_wallet: { type: 'string', description: 'Required only for single_trader focus.' },
+        }, required: ['trader_wallets'], additionalProperties: false,
+      },
+      execute: (input) => runAgentMutation(
+        () => composeTraderComparison(input),
+        (result) => `${String(result.focus)} · ${Number(result.disagreement_count) || 0} disagreements`,
+      ),
+      annotations: { readOnlyHint: false },
+    });
+    void register({
+      name: 'compose_market_comparison',
+      title: 'Compare related or selected markets',
+      description: 'Recompile the same desk around exact Polymarket event siblings or 2 to 6 explicit condition IDs while preserving its source thesis, traders, filters, and linked Watch.',
+      inputSchema: {
+        type: 'object', properties: {
+          anchor_condition_id: { type: 'string', description: 'Exact condition ID anchoring the comparison.' },
+          comparison_basis: { type: 'string', enum: ['exact_event_siblings', 'selected_comparison_set'] },
+          condition_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
+          trader_wallets: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'string' } },
+        }, required: ['anchor_condition_id', 'comparison_basis'], additionalProperties: false,
+      },
+      execute: (input) => runAgentMutation(
+        () => composeMarketComparison(input),
+        (result) => `${Number(result.market_count) || 0} markets compared`,
+      ),
+      annotations: { readOnlyHint: false },
+    });
+    void register({
+      name: 'create_trader_watch',
+      title: 'Attach a persistent Watch to this comparison',
+      description: 'Create and evaluate one deterministic device-local Watch for explicit comparison wallets, then attach it without navigating away from the research desk.',
+      inputSchema: {
+        type: 'object', properties: {
+          name: { type: 'string' },
+          trader_wallets: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string', description: 'Exact wallet from this comparison.' } },
+          relationship: { type: 'string', enum: ['same_side', 'opposite_sides', 'new_position'] },
+          minimum_trader_overlap: { type: 'number', minimum: 1, maximum: 4 },
+          minimum_position_value: { type: 'number', minimum: 0 },
+          exclude_sports: { type: 'boolean' },
+        }, required: ['name', 'trader_wallets', 'relationship'], additionalProperties: false,
+      },
+      execute: (input) => runAgentMutation(
+        () => createTraderWatch(input),
+        (result) => `Watch attached · ${Number(result.match_count) || 0} current matches`,
+      ),
+      annotations: { readOnlyHint: false },
+    });
+    if (currentWatch && researchContext.linkedWatchId === currentWatch.id) {
+      void register({
+        name: 'open_watch',
+        title: 'Open the attached Watch',
+        description: 'Deliberately enter the full interface for the Watch attached to this comparison desk.',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        execute: () => runAgentMutation(() => {
+          setWatchesOpen(true);
+          setSavedViewsOpen(false);
+          return { watch_id: currentWatch.id, match_count: currentWatch.matches.length, ui_changed: true };
+        }, 'Attached Watch opened'),
+        annotations: { readOnlyHint: false },
+      });
+      void register({
+        name: 'update_current_watch',
+        title: 'Edit the attached Watch in place',
+        description: 'Update the same attached Watch using explicit rule primitives while keeping the comparison desk visible.',
+        inputSchema: {
+          type: 'object', properties: {
+            name: { type: 'string' },
+            trader_wallets: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string' } },
+            relationship: { type: 'string', enum: ['same_side', 'opposite_sides', 'new_position'] },
+            minimum_trader_overlap: { type: 'number', minimum: 1, maximum: 4 },
+            minimum_position_value: { type: 'number', minimum: 0 },
+            exclude_sports: { type: 'boolean' },
+            status: { type: 'string', enum: ['active', 'paused'] },
+          }, additionalProperties: false,
+        },
+        execute: (input) => runAgentMutation(() => updateCurrentWatch(input), 'Attached Watch updated'),
+        annotations: { readOnlyHint: false },
+      });
+      void register({
+        name: 'show_current_watch_matches',
+        title: 'Check the attached Watch now',
+        description: 'Evaluate the attached active Watch against live current positions and update its compact continuity module in the desk.',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        execute: () => runAgentMutation(() => checkWatchNow(currentWatch.id), (result) => `${Number(result.match_count) || 0} Watch matches`),
+        annotations: { readOnlyHint: false, untrustedContentHint: true },
+      });
+      if (currentWatch.matches.length) void register({
+        name: 'open_watch_match',
+        title: 'Open an attached Watch match',
+        description: 'Open a current matching market by exact condition ID over the preserved comparison desk.',
+        inputSchema: { type: 'object', properties: { condition_id: { type: 'string' } }, required: ['condition_id'], additionalProperties: false },
+        execute: ({ condition_id }) => runAgentMutation(() => {
+          const requested = String(condition_id);
+          if (!currentWatch.matches.some((match) => match.conditionId === requested)) return { error: 'Market is not a current match for this Watch.', ui_changed: false };
+          return openMarketByConditionId(requested);
+        }, 'Watch match opened'),
+        annotations: { readOnlyHint: false, untrustedContentHint: true },
+      });
+    }
+    return () => controller.abort();
+  }, [checkWatchNow, composeMarketComparison, composeTraderComparison, createTraderWatch, currentWatch, openMarketByConditionId, researchContext, runAgentMutation, toolContext, updateCurrentWatch]);
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
@@ -1581,6 +2176,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     [comments, positionedCommentsOnly],
   );
   const totalVolume = useMemo(() => visibleMarkets.reduce((sum, market) => sum + market.volume24h, 0), [visibleMarkets]);
+  const linkedWatch = researchContext?.linkedWatchId
+    ? watches.find((watch) => watch.id === researchContext.linkedWatchId) ?? null
+    : null;
   function submitSearch(event: { preventDefault: () => void }) { event.preventDefault(); void runSearch(query); }
 
   return (
@@ -1596,16 +2194,16 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         </form>
         <nav className="header-actions" aria-label="Primary">
           <Button variant={savedViewsOpen ? 'secondary' : 'ghost'} onClick={() => { setSavedViewsOpen((current) => !current); setWatchesOpen(false); }}>
-            <Bookmark /> Views <span key={savedViews.length} className="nav-count count-pop">{savedViews.length}</span>
+            <Bookmark /> Views <span className="nav-count">{savedViews.length}</span>
           </Button>
           <Button variant="ghost" onClick={() => void composeFollowedTraderView()} disabled={!followedTraders.length}>
-            <UserCheck /> Followed <span key={followedTraders.length} className="nav-count count-pop">{followedTraders.length}</span>
+            <UserCheck /> Followed <span className="nav-count">{followedTraders.length}</span>
           </Button>
           <Button variant={watchlistOnly ? 'secondary' : 'ghost'} onClick={() => setWatchlistOnly((current) => !current)}>
-            <Star /> Saved <span key={watchlist.length} className="nav-count count-pop">{watchlist.length}</span>
+            <Star /> Saved <span className="nav-count">{watchlist.length}</span>
           </Button>
           <Button variant={watchesOpen ? 'secondary' : 'ghost'} onClick={() => { setWatchesOpen((current) => !current); setSavedViewsOpen(false); if (!currentWatchId && watches[0]) setCurrentWatchId(watches[0].id); }}>
-            <Radar /> Watches <span key={watches.length} className="nav-count count-pop">{watches.length}</span>
+            <Radar /> Watches <span className="nav-count">{watches.length}</span>
           </Button>
           <Button variant="outline"><CircleDollarSign /> Paper <span className="paper-balance">{paperTrades.length} trades</span></Button>
         </nav>
@@ -1686,25 +2284,49 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             className="title-copy"
             style={{ viewTransitionName: 'side-page-title' }}
           >
-            <h1>{composedView ? composedView.title : watchlistOnly ? 'Saved markets' : activeQuery ? `Markets for “${activeQuery}”` : 'Markets moving now'}</h1>
-            <p>{composedView ? composedView.intent : watchlistOnly ? 'Device-local markets you want to keep close.' : activeQuery ? 'Live matches, ranked by activity.' : 'High-signal markets ranked by 24-hour volume.'}</p>
+            <h1>{researchContext ? 'Live research desk' : composedView ? composedView.title : watchlistOnly ? 'Saved markets' : activeQuery ? `Markets for “${activeQuery}”` : 'Markets moving now'}</h1>
+            <p>{researchContext ? 'The interface is preserving your thesis while reorganizing around the question.' : composedView ? composedView.intent : watchlistOnly ? 'Device-local markets you want to keep close.' : activeQuery ? 'Live matches, ranked by activity.' : 'High-signal markets ranked by 24-hour volume.'}</p>
           </div>
           <div className="feed-stat"><span>{compactMoney.format(totalVolume)}</span> visible volume</div>
         </div>
-        <div className="filter-row">
+        {!researchContext && <div className="filter-row">
           {['Trending', 'Politics', 'Tech', 'Economy', 'Crypto', 'Culture', 'Sports'].map((filter) => (
             <button key={filter} className={!activeQuery && filter === 'Trending' ? 'active' : ''} onClick={() => void runSearch(filter === 'Trending' ? '' : filter)}>
               {filter === 'Trending' && <TrendingUp />} {filter}
             </button>
           ))}
           <div className="agent-nudge"><Sparkles /> Try asking your agent: “Find AI markets”</div>
-        </div>
-        {composedView && <div key={composedView.updatedAt} className="composed-status saved-pulse"><Bookmark /> Saved automatically <span>·</span> Updated {shortDate.format(new Date(composedView.updatedAt))}</div>}
+        </div>}
+        {composedView && <div className="composed-status"><Bookmark /> {researchContext ? 'Research context preserved' : 'Saved automatically'} <span>·</span> Updated {shortDate.format(new Date(composedView.updatedAt))}</div>}
         {selectedMarketIds.length > 0 && (
           <div className="selection-bar"><span>{selectedMarketIds.length} selected</span><small>Ask your agent to “build around these.”</small><button onClick={() => setSelectedMarketIds([])}>Clear</button></div>
         )}
         {error && <div className="error-banner" role="alert">{error}</div>}
-        {(!composedView || visibleMarkets.length > 0) && (
+        {researchContext?.mode === 'trader_comparison' && composedView && (
+          <TraderComparisonDesk
+            context={researchContext}
+            traders={composedView.traders}
+            rows={comparisonRows}
+            sourceRow={sourceComparisonRow}
+            linkedWatch={linkedWatch}
+            loading={comparisonLoading}
+            onOpenMarket={(conditionId) => void openMarketByConditionId(conditionId)}
+            onOpenTrader={(wallet) => void openTrader(wallet)}
+            onCheckWatch={(watchId) => void checkWatchNow(watchId)}
+            onOpenWatch={(watchId) => { setCurrentWatchId(watchId); setWatchesOpen(true); setSavedViewsOpen(false); }}
+          />
+        )}
+        {researchContext?.mode === 'market_comparison' && composedView && (
+          <MarketComparisonDesk
+            context={researchContext}
+            markets={comparisonMarkets}
+            profiles={comparisonProfiles}
+            holders={comparisonHolders}
+            linkedWatch={linkedWatch}
+            onOpenMarket={(conditionId) => void openMarketByConditionId(conditionId)}
+          />
+        )}
+        {!researchContext && (!composedView || visibleMarkets.length > 0) && (
           <section key={composedView ? `${composedView.id}-markets-${composedView.updatedAt}` : `feed-${activeQuery}`} className={composedView ? 'composed-section composed-section-markets' : undefined}>
             {composedView && <div className="composed-section-heading"><span>{composedView.sections.find((section) => section.type === 'markets')?.title ?? 'Markets'}</span><small>{visibleMarkets.length} LIVE</small></div>}
             <div className={`market-grid ${loading ? 'is-loading' : ''}`} aria-busy={loading}>
@@ -1712,7 +2334,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             </div>
           </section>
         )}
-        {composedView?.traders.length ? (
+        {!researchContext && composedView?.traders.length ? (
           <section key={`${composedView.id}-traders-${composedView.updatedAt}`} className="composed-section trader-composition">
             <div className="composed-section-heading"><span>{composedView.sections.find((section) => section.type === 'traders')?.title ?? 'Notable traders'}</span><small>FACTUAL SIGNALS</small></div>
             <div className="composed-trader-grid">
@@ -1723,13 +2345,13 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                     <span className="holder-avatar">{trader.name.slice(0, 1).toUpperCase()}</span>
                     <span><strong>{trader.name}</strong><small>{trader.reason}</small></span><ChevronRight />
                   </button>
-                  <button className={`follow-mini ${isFollowed ? 'is-active' : ''}`} onClick={() => toggleTraderFollow(trader.wallet, trader.name, trader.reason)}><span key={String(isFollowed)} className="state-pop">{isFollowed ? <UserCheck /> : <UserPlus />}{isFollowed ? 'Following' : 'Follow'}</span></button>
+                  <button className={`follow-mini ${isFollowed ? 'is-active' : ''}`} onClick={() => toggleTraderFollow(trader.wallet, trader.name, trader.reason)}><span>{isFollowed ? <UserCheck /> : <UserPlus />}{isFollowed ? 'Following' : 'Follow'}</span></button>
                 </article>;
               })}
             </div>
           </section>
         ) : null}
-        {composedView?.sections.some((section) => section.type === 'trader_positions') && (
+        {!researchContext && composedView?.sections.some((section) => section.type === 'trader_positions') && (
           <section key={`${composedView.id}-positions-${composedView.updatedAt}`} className="composed-section followed-positions">
             <div className="composed-section-heading"><span>Current positions</span><small>NON-REDEEMABLE · LIVE</small></div>
             {composedView.traders.map((trader) => {
@@ -1741,7 +2363,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             })}
           </section>
         )}
-        {!loading && visibleMarkets.length === 0 && !composedView?.sections.some((section) => section.type === 'trader_positions') && (
+        {!researchContext && !loading && visibleMarkets.length === 0 && !composedView?.sections.some((section) => section.type === 'trader_positions') && (
           <div className="empty-state"><Search /><h2>{watchlistOnly ? 'No saved markets yet' : 'No live markets found'}</h2><p>{watchlistOnly ? 'Open a market and save it from the detail drawer.' : 'Try a broader topic, like politics, crypto, or sports.'}</p><Button onClick={() => watchlistOnly ? setWatchlistOnly(false) : void runSearch('')}>{watchlistOnly ? 'Browse markets' : 'Back to trending'}</Button></div>
         )}
       </section>
@@ -1749,13 +2371,13 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       <Sheet open={Boolean(selectedMarket || selectedTrader)} onOpenChange={(open) => { if (!open) { setSelectedMarket(null); setSelectedTrader(null); setHolders([]); setComments([]); setCommentsOpen(false); setCommentArguments(null); setDrawerMode('market'); } }}>
         <SheetContent className="market-drawer sm:max-w-[760px]" showCloseButton>
           {selectedMarket && !selectedTrader && (
-            <div key={`${selectedMarket.id}-${drawerMode}-${drawerDirection}`} className={`drawer-stage drawer-stage-${drawerMode} drawer-${drawerDirection}`}>
+            <div className={`drawer-stage drawer-stage-${drawerMode}`}>
               <SheetHeader className="drawer-header">
                 <div className="drawer-kicker"><span>{selectedMarket.category}</span><span>•</span><span>POLYMARKET</span><span className="drawer-live">LIVE</span></div>
                 <SheetTitle>{selectedMarket.question}</SheetTitle>
                 <SheetDescription>{selectedMarket.description || 'Live binary prediction market.'}</SheetDescription>
                 <Button className={`watch-market-button state-button ${watchlist.includes(selectedMarket.id) ? 'is-active' : ''}`} variant={watchlist.includes(selectedMarket.id) ? 'secondary' : 'outline'} onClick={() => toggleWatchlist(selectedMarket.id)}>
-                  <span key={String(watchlist.includes(selectedMarket.id))} className="state-pop">
+                  <span>
                     {watchlist.includes(selectedMarket.id) ? <Check /> : <Star />}
                     {watchlist.includes(selectedMarket.id) ? 'Saved' : 'Save market'}
                   </span>
@@ -1801,7 +2423,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                       <div className="argument-grid">
                         {(['yes', 'no'] as const).map((side) => commentArguments[side].length > 0 && <div className={`argument-column ${side}`} key={side}>
                           <div className="argument-heading">{side.toUpperCase()} CASE</div>
-                          {commentArguments[side].map((argument, index) => <article key={`${side}-${index}`} style={{ animationDelay: `${Math.min(index * 35, 105)}ms` }}>
+                          {commentArguments[side].map((argument, index) => <article key={`${side}-${index}`}>
                             <strong>{argument.claim}</strong>
                             <small>{argument.evidenceCommentIds.length} cited comment{argument.evidenceCommentIds.length === 1 ? '' : 's'}</small>
                             <div className="argument-evidence">{argument.evidenceCommentIds.map((id) => {
@@ -1813,9 +2435,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                       </div>
                     )}
                     <div className="comment-list">
-                      {visibleComments.map((comment, index) => {
+                      {visibleComments.map((comment) => {
                         const matchedHolder = Boolean(comment.author.wallet && holders.some((holder) => holder.wallet.toLowerCase() === comment.author.wallet.toLowerCase()));
-                        return <article className={`comment-row ${comment.parentCommentId ? 'reply' : ''}`} style={{ animationDelay: `${Math.min(index * 18, 126)}ms` }} key={comment.id}>
+                        return <article className={`comment-row ${comment.parentCommentId ? 'reply' : ''}`} key={comment.id}>
                           <div className="comment-meta"><span className="holder-avatar">{(comment.author.name || comment.author.pseudonym || '0').slice(0, 1).toUpperCase()}</span><span><strong>{comment.author.name || comment.author.pseudonym || `${comment.author.wallet.slice(0, 8)}…`}</strong><small>{comment.createdAt ? commentTime.format(new Date(comment.createdAt)) : 'Time unavailable'}</small></span><span className="comment-badges">{comment.position && <b>{comment.position.side} POSITION</b>}{matchedHolder && <b>VISIBLE HOLDER</b>}</span></div>
                           <p>{comment.body}</p>
                           <div className="comment-foot"><span>#{comment.id}</span>{comment.reactionCount > 0 && <span>{comment.reactionCount} reactions</span>}{comment.parentCommentId && <span>reply to #{comment.parentCommentId}</span>}</div>
@@ -1845,9 +2467,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             </div>
           )}
           {selectedTrader && (
-            <div key={`${selectedTrader.wallet}-${drawerDirection}`} className={`drawer-stage drawer-stage-trader drawer-${drawerDirection}`}>
+            <div className="drawer-stage drawer-stage-trader">
               <SheetHeader className="drawer-header trader-header">
-                <button className="back-button" onClick={() => commitMotion('drawer-back', () => { setSelectedTrader(null); setDrawerMode(returnDrawerMode.current); setDrawerDirection('back'); })}><ArrowLeft /> Back to market</button>
+                <button className="back-button" onClick={() => commitMotion('drawer-back', () => { setSelectedTrader(null); setDrawerMode(returnDrawerMode.current); })}><ArrowLeft /> Back to market</button>
                 <div className="trader-profile-row">
                   <span className="profile-avatar">{selectedTrader.image ? <img src={selectedTrader.image} alt="" /> : (selectedTrader.name || selectedTrader.pseudonym || '0').slice(0, 1).toUpperCase()}</span>
                   <div>
@@ -1857,7 +2479,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                   </div>
                 </div>
                 <Button className={`watch-market-button state-button ${followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()) ? 'is-active' : ''}`} variant={followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()) ? 'secondary' : 'outline'} onClick={() => toggleTraderFollow(selectedTrader.wallet, selectedTrader.name || selectedTrader.pseudonym, 'Followed from trader intelligence')}>
-                  <span key={String(followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()))} className="state-pop">
+                  <span>
                     {followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()) ? <UserCheck /> : <UserPlus />}
                     {followedTraders.some((trader) => trader.wallet.toLowerCase() === selectedTrader.wallet.toLowerCase()) ? 'Following' : 'Follow trader'}
                   </span>
