@@ -2942,6 +2942,21 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         ),
         annotations: { readOnlyHint: false },
       });
+      if (hasMarketResearchSelection) void register({
+        name: 'compose_market_comparison',
+        title: 'Expand or refine this market comparison',
+        description: 'Recompile the same desk around exact event siblings or 2 to 6 explicit condition IDs while preserving the source thesis and validated research state.',
+        inputSchema: { type: 'object', properties: {
+          anchor_condition_id: { type: 'string' },
+          comparison_basis: { type: 'string', enum: ['exact_event_siblings', 'selected_comparison_set'] },
+          condition_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
+        }, required: ['anchor_condition_id', 'comparison_basis'], additionalProperties: false },
+        execute: (input) => runAgentMutation(
+          () => workspaceActionsRef.current?.composeMarkets(input) ?? Promise.resolve({ error: 'Market comparison is not ready.', ui_changed: false }),
+          (result) => `${Number(result.market_count) || 0} markets compared`,
+        ),
+        annotations: { readOnlyHint: false },
+      });
     }
     void register({
       name: 'create_trader_watch',
