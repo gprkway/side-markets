@@ -22,6 +22,8 @@ Side is a WebMCP-native prediction-market browser designed for a human and their
 - Provenance-backed Codex findings that Side validates against live market/position IDs
 - Human Pin/Reject controls for agent-created research objects
 - Selection-aware Watch handoff that keeps the research desk mounted
+- Registry-driven “With Codex” guide with current and unlockable capabilities
+- Root capability discovery plus compact capability snapshots in existing contextual read tools
 - Real Polymarket event comments with exact outcome-token and visible-holder matching when supported
 - Evidence-backed YES/NO argument rendering that preserves original comment IDs
 - Human-confirmed paper-trade preparation; no real execution
@@ -31,7 +33,7 @@ Side is a WebMCP-native prediction-market browser designed for a human and their
 
 ## WebMCP tools
 
-The always-available tools include `search_markets`, `compose_market_view`, and `open_market`. Side adds refinement tools while a composed view is active, market and discussion tools while a market drawer is open, holder/follow tools after trader intelligence is loaded, and trader context only while a trader profile is visible. `open_trader_position` can load a trader's real market by condition ID even when it was never in the discovery grid.
+The always-available tools include `search_markets`, `compose_market_view`, and `open_market`. At the root, `get_side_capabilities` returns a compact registry-backed summary of what Side can do now and what one clear human action can unlock. In every other context, the same capability snapshot is included in the existing context-reading tool, preserving the tested maximum of 11 registrations. Side adds refinement tools while a composed view is active, market and discussion tools while a market drawer is open, holder/follow tools after trader intelligence is loaded, and trader context only while a trader profile is visible. `open_trader_position` can load a trader's real market by condition ID even when it was never in the discovery grid.
 
 Inside a trader comparison, `get_current_research_set` exposes compact semantic state for exact human-selected cells. When a selection exists, the bounded contextual group swaps comparison composition for `research_current_selection` and `render_research_findings`. Research calls validate the research-set ID and revision, show only real request/cache progress, and reject stale work. Findings accept no submitted observations: every entity/evidence reference must resolve against the factual run, and Side renders the observed values itself. Baseline plus contextual tools remain capped at 11 registrations.
 
@@ -68,6 +70,8 @@ Open the local URL printed by the development server in a WebMCP-capable browser
 ## Product boundaries
 
 Side does not provide real-money execution, custody, authentication, a custom chatbot, or investment advice. Market data is sourced from Polymarket's public APIs.
+
+The Agent Guide is intentionally documentation-only. Event and market normalization, feed-card structure, charts, price history, order-book presentation, sports presentation, and Polymarket event grouping remain reserved for a separate market-fidelity pass.
 
 Following and Watches are research-only local state. Watches are evaluated when Side loads, refreshes, or the human requests a check; Side does not claim autonomous push notifications or continuous background monitoring. Comments are read-only; Side does not post, moderate, or infer identities. A commenter is labeled as positioned only when Polymarket supplies a token that exactly matches an outcome token for the current event.
 

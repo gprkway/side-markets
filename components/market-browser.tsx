@@ -66,6 +66,13 @@ import type {
 import { buildTraderComparisonRows, type ComparisonRow } from '@/lib/views/comparison';
 import { evaluateTraderWatch } from '@/lib/watches/evaluate';
 import type { TraderWatch, WatchRelationship } from '@/lib/watches/types';
+import { AgentGuide } from '@/components/agent-guide';
+import {
+  buildSideCapabilitySnapshot,
+  resolveSideCapabilities,
+  type SideCapabilityContext,
+  type SideCapabilityState,
+} from '@/lib/capabilities';
 
 type PaperTradeDraft = {
   marketId: string;
@@ -168,6 +175,7 @@ const commentTime = new Intl.DateTimeFormat('en-US', {
 
 const MARKET_CACHE_KEY = 'side.marketFeeds.v1';
 const SAVED_VIEWS_KEY = 'side.savedViews';
+const AGENT_GUIDE_DISMISSED_KEY = 'side.agentGuideDismissed';
 const FOLLOWED_TRADERS_KEY = 'side.followedTraders';
 const TRADER_WATCHES_KEY = 'side.traderWatches.v1';
 
@@ -548,6 +556,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [agentConnected, setAgentConnected] = useState(false);
+  const [agentGuideOpen, setAgentGuideOpen] = useState(false);
+  const [agentGuideDismissed, setAgentGuideDismissed] = useState(true);
+  const [agentGuideHydrated, setAgentGuideHydrated] = useState(false);
   const [holders, setHolders] = useState<Holder[]>([]);
   const [holdersLoading, setHoldersLoading] = useState(false);
   const [selectedTrader, setSelectedTrader] = useState<TraderProfile | null>(null);
@@ -593,6 +604,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const researchRunRef = useRef<ResearchRunState | null>(null);
   const researchCacheRef = useRef<ResearchRunCache | null>(null);
   const researchAbortRef = useRef<AbortController | null>(null);
+  const capabilitySnapshotRef = useRef<ReturnType<typeof buildSideCapabilitySnapshot> | null>(null);
   const returnDrawerMode = useRef<Exclude<DrawerMode, 'trader'>>('market');
 
   const commitMotion = useCallback((_kind: string, update: () => void) => {
@@ -603,6 +615,17 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     if (agentActionTimer.current !== null) window.clearTimeout(agentActionTimer.current);
     setAgentAction({ id: Date.now(), message });
     agentActionTimer.current = window.setTimeout(() => setAgentAction(null), 1800);
+  }, []);
+
+  const openAgentGuide = useCallback(() => {
+    setAgentGuideOpen(true);
+    setAgentGuideDismissed(true);
+    try { localStorage.setItem(AGENT_GUIDE_DISMISSED_KEY, 'true'); } catch { /* Device-local preference is optional. */ }
+  }, []);
+
+  const dismissAgentGuideHint = useCallback(() => {
+    setAgentGuideDismissed(true);
+    try { localStorage.setItem(AGENT_GUIDE_DISMISSED_KEY, 'true'); } catch { /* Device-local preference is optional. */ }
   }, []);
 
   const runAgentMutation = useCallback(async (
@@ -672,6 +695,54 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         : composedView
           ? 'workspace'
           : 'root';
+  const capabilityContext: SideCapabilityContext = toolContext === 'workspace'
+    ? researchContext?.mode === 'market_comparison'
+      ? 'market_comparison'
+      : researchContext?.mode === 'trader_comparison'
+        ? researchContext.selectedCells.length > 0 ? 'selected_relationship' : 'trader_comparison'
+        : 'workspace'
+    : toolContext;
+  const selectedResearchCells = researchContext?.selectedCells ?? [];
+  const hasResearchableSelection = selectedResearchCells.length >= 2
+    && new Set(selectedResearchCells.map((cell) => cell.wallet.toLowerCase())).size >= 2
+    && new Set(selectedResearchCells.map((cell) => cell.conditionId.toLowerCase())).size === 1;
+  const capabilityState = useMemo<SideCapabilityState>(() => ({
+    context: capabilityContext,
+    siteToolsAvailable: agentConnected,
+    selectedCellCount: selectedResearchCells.length,
+    hasResearchableSelection,
+    hasVisibleMarkets: markets.length > 0,
+    hasSelectedMarkets: selectedMarketIds.length > 0,
+    marketHasEvent: Boolean(selectedMarket?.eventId),
+    hasMultipleHolders: holders.length >= 2,
+    hasVisibleWatchTraders: availableWatchTraders.length > 0,
+    hasFollowedTraders: followedTraders.length > 0,
+    hasActiveFindings: Boolean(researchContext?.findings.some((finding) => finding.status === 'active')),
+    hasPinnedFinding: Boolean(researchContext?.findings.some((finding) => finding.status === 'pinned')),
+    hasWatches: watches.length > 0,
+    hasLinkedWatch: hasLinkedResearchWatch,
+  }), [
+    agentConnected,
+    availableWatchTraders.length,
+    capabilityContext,
+    followedTraders.length,
+    hasLinkedResearchWatch,
+    hasResearchableSelection,
+    holders.length,
+    markets.length,
+    researchContext?.findings,
+    selectedMarket?.eventId,
+    selectedMarketIds.length,
+    selectedResearchCells.length,
+    watches.length,
+  ]);
+  const resolvedCapabilities = useMemo(() => resolveSideCapabilities(capabilityState), [capabilityState]);
+  const capabilitySnapshot = useMemo(() => buildSideCapabilitySnapshot(capabilityState), [capabilityState]);
+  const availableCapabilityCount = resolvedCapabilities.filter((capability) => capability.actor !== 'human' && capability.availability === 'available').length;
+
+  useEffect(() => {
+    capabilitySnapshotRef.current = capabilitySnapshot;
+  }, [capabilitySnapshot]);
 
   useEffect(() => {
     researchRunRef.current = researchRun;
@@ -722,6 +793,13 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   }, [markets]);
   useEffect(() => {
     queueMicrotask(() => {
+      try {
+        setAgentGuideDismissed(localStorage.getItem(AGENT_GUIDE_DISMISSED_KEY) === 'true');
+      } catch {
+        setAgentGuideDismissed(true);
+      } finally {
+        setAgentGuideHydrated(true);
+      }
       try {
         setWatchlist(JSON.parse(localStorage.getItem('side.watchlist') ?? '[]'));
         setPaperTrades(JSON.parse(localStorage.getItem('side.paperTrades') ?? '[]'));
@@ -1803,6 +1881,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         sourceRunId: finding.sourceRunId,
       })),
       linkedWatchIds: normalized.linkedWatchIds,
+      capabilities: capabilitySnapshotRef.current,
       ui_changed: false,
     };
   }, []);
@@ -2301,17 +2380,33 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
+    if (toolContext !== 'root' || !modelContext?.registerTool) return;
+    const controller = new AbortController();
+    void modelContext.registerTool({
+      name: 'get_side_capabilities',
+      title: 'Discover what Side can do here',
+      description: 'Return a compact product-level summary of the Side capabilities available in the current root view, plus relevant capabilities that one clear human action can unlock.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: () => capabilitySnapshotRef.current ?? { error: 'Side capability state is not ready.', ui_changed: false },
+      annotations: { readOnlyHint: true },
+    }, { signal: controller.signal });
+    return () => controller.abort();
+  }, [toolContext]);
+
+  useEffect(() => {
+    const modelContext = document.modelContext ?? navigator.modelContext;
     if (!composedView || researchContext || toolContext !== 'workspace' || !modelContext?.registerTool) return;
     const controller = new AbortController();
     void modelContext.registerTool({
       name: 'get_current_workspace_context',
       title: 'Inspect the current shared research workspace',
-      description: 'Return the saved view, visible objects, and the market IDs manually selected by the human. Use this to resolve references such as this, these, selected, or current view.',
+      description: 'Return the saved view, visible objects, manually selected market IDs, and compact semantic capabilities available in this workspace. Use this to resolve references such as this, these, selected, or current view.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       execute: () => ({
         view: composedView,
         selected_market_ids: selectedMarketIds,
         selected_markets: selectedMarketIds.map((id) => markets.find((market) => market.id === id)).filter(Boolean),
+        capabilities: capabilitySnapshotRef.current,
         ui_changed: false,
       }),
       annotations: { readOnlyHint: true, untrustedContentHint: true },
@@ -2442,9 +2537,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     void register({
       name: 'get_current_market_context',
       title: 'Get the open market context',
-      description: 'Return the market currently open in Side, including its live outcomes and visible market statistics.',
+      description: 'Return the market currently open in Side, including its live outcomes, visible market statistics, and compact semantic capabilities available here.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      execute: () => ({ ...selectedMarket, ui_changed: false }),
+      execute: () => ({ ...selectedMarket, capabilities: capabilitySnapshotRef.current, ui_changed: false }),
       annotations: { readOnlyHint: true, untrustedContentHint: true },
     });
     void register({
@@ -2589,7 +2684,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     void register({
       name: 'get_current_research_set',
       title: 'Read the exact shared research selection',
-      description: 'Return compact semantic IDs for the current Side research set, including the exact trader-position cells the human selected. Use this first to resolve “this,” “these,” or “what I selected.”',
+      description: 'Return compact semantic IDs for the current Side research set, the exact trader-position cells the human selected, and the semantic capabilities available here. Use this first to resolve “this,” “these,” or “what I selected.”',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       execute: () => workspaceActionsRef.current?.getResearchSet()
         ?? { error: 'Shared research state is not ready.', ui_changed: false },
@@ -2799,9 +2894,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     void modelContext.registerTool({
       name: 'get_current_trader_context',
       title: 'Get the open trader context',
-      description: 'Return the trader profile currently open in Side, including current positions and resolved history.',
+      description: 'Return the trader profile currently open in Side, including current positions, resolved history, and compact semantic capabilities available here.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      execute: () => ({ ...selectedTrader, ui_changed: false }),
+      execute: () => ({ ...selectedTrader, capabilities: capabilitySnapshotRef.current, ui_changed: false }),
       annotations: { readOnlyHint: true, untrustedContentHint: true },
     }, { signal: controller.signal });
     void modelContext.registerTool({
@@ -2852,9 +2947,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     void modelContext.registerTool({
       name: 'get_current_watch_context',
       title: 'Inspect the open Watch',
-      description: 'Return the structured rule, snapshots, current matches, status, and last evaluation time for the Watch open in Side.',
+      description: 'Return the structured rule, snapshots, current matches, status, last evaluation time, and compact semantic capabilities available for the Watch open in Side.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      execute: () => ({ ...currentWatch, ui_changed: false }),
+      execute: () => ({ ...currentWatch, capabilities: capabilitySnapshotRef.current, ui_changed: false }),
       annotations: { readOnlyHint: true, untrustedContentHint: true },
     }, { signal: controller.signal });
     void modelContext.registerTool({
@@ -3006,6 +3101,8 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         </output>
       )}
 
+      <AgentGuide open={agentGuideOpen} onClose={() => setAgentGuideOpen(false)} capabilityState={capabilityState} />
+
       <section className="market-surface" id="top">
         {savedViewsOpen && (
           <div className="saved-views-panel">
@@ -3067,7 +3164,9 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         )}
         <div className="eyebrow-row">
           <div className={`live-label ${feedMeta.isStale ? 'cached' : ''}`}><span /> {feedMeta.isStale ? 'CACHED REAL DATA' : 'LIVE MARKET INTELLIGENCE'} <small>{freshnessText}</small></div>
-          <div className={`agent-status ${agentConnected ? 'connected' : ''}`}><Bot /> {agentConnected ? 'AGENT CONNECTED' : 'BROWSER MODE'}</div>
+          <button type="button" className={`agent-status ${agentConnected ? 'connected' : ''}`} onClick={openAgentGuide} aria-expanded={agentGuideOpen}>
+            <Bot /> {agentConnected ? `SITE TOOLS AVAILABLE · ${availableCapabilityCount} capabilities here` : 'BROWSER MODE · See With Codex'}
+          </button>
         </div>
         <div className="title-row">
           <div
@@ -3080,6 +3179,14 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
           </div>
           <div className="feed-stat"><span>{compactMoney.format(totalVolume)}</span> visible volume</div>
         </div>
+        {agentGuideHydrated && !agentGuideDismissed && (
+          <aside className="agent-onboarding" aria-label="Side with Codex introduction">
+            <Bot />
+            <div><strong>SIDE + CODEX</strong><span>You can mix clicks and language. Build a trader comparison, select two positions, then ask “Explain this.”</span></div>
+            <button type="button" onClick={openAgentGuide}>See what you can do</button>
+            <button type="button" className="agent-onboarding-close" onClick={dismissAgentGuideHint} aria-label="Dismiss Side with Codex introduction"><X /></button>
+          </aside>
+        )}
         {!researchContext && <div className="filter-row">
           {['Trending', 'Politics', 'Tech', 'Economy', 'Crypto', 'Culture', 'Sports'].map((filter) => (
             <button key={filter} className={!activeQuery && filter === 'Trending' ? 'active' : ''} onClick={() => void runSearch(filter === 'Trending' ? '' : filter)}>
@@ -3168,7 +3275,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
           {selectedMarket && !selectedTrader && (
             <div className={`drawer-stage drawer-stage-${drawerMode}`}>
               <SheetHeader className="drawer-header">
-                <div className="drawer-kicker"><span>{selectedMarket.category}</span><span>•</span><span>POLYMARKET</span><span className="drawer-live">LIVE</span></div>
+                <div className="drawer-kicker"><span>{selectedMarket.category}</span><span>•</span><span>POLYMARKET</span><span className="drawer-live">LIVE</span><button type="button" className="drawer-guide-link" onClick={openAgentGuide}><Bot /> With Codex</button></div>
                 <SheetTitle>{selectedMarket.question}</SheetTitle>
                 <SheetDescription>{selectedMarket.description || 'Live binary prediction market.'}</SheetDescription>
                 <Button className={`watch-market-button state-button ${watchlist.includes(selectedMarket.id) ? 'is-active' : ''}`} variant={watchlist.includes(selectedMarket.id) ? 'secondary' : 'outline'} onClick={() => toggleWatchlist(selectedMarket.id)}>
@@ -3268,7 +3375,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                 <div className="trader-profile-row">
                   <span className="profile-avatar">{selectedTrader.image ? <img src={selectedTrader.image} alt="" /> : (selectedTrader.name || selectedTrader.pseudonym || '0').slice(0, 1).toUpperCase()}</span>
                   <div>
-                    <div className="drawer-kicker"><span>TRADER INTELLIGENCE</span>{selectedTrader.verified && <span className="drawer-live">VERIFIED</span>}</div>
+                    <div className="drawer-kicker"><span>TRADER INTELLIGENCE</span>{selectedTrader.verified && <span className="drawer-live">VERIFIED</span>}<button type="button" className="drawer-guide-link" onClick={openAgentGuide}><Bot /> With Codex</button></div>
                     <SheetTitle>{selectedTrader.name || selectedTrader.pseudonym || `${selectedTrader.wallet.slice(0, 8)}…${selectedTrader.wallet.slice(-5)}`}</SheetTitle>
                     <SheetDescription>{selectedTrader.bio || `${selectedTrader.wallet.slice(0, 12)}…${selectedTrader.wallet.slice(-8)}`}</SheetDescription>
                   </div>
