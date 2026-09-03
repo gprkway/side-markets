@@ -8,6 +8,7 @@ type RawMarket = Record<string, unknown> & {
   slug?: string;
   question?: string;
   title?: string;
+  groupItemTitle?: string;
   description?: string;
   category?: string;
   image?: string;
@@ -31,6 +32,12 @@ type RawMarket = Record<string, unknown> & {
 type RawEvent = {
   id?: string;
   title?: string;
+  slug?: string;
+  image?: string;
+  icon?: string;
+  volume?: string | number;
+  volume24hr?: number;
+  liquidity?: string | number;
   category?: string;
   commentCount?: number;
   markets?: RawMarket[];
@@ -65,6 +72,13 @@ function normalizeMarket(raw: RawMarket, event?: RawEvent): Market | null {
     id: raw.id,
     conditionId: raw.conditionId,
     eventId: event?.id ?? raw.events?.[0]?.id ?? null,
+    eventTitle: event?.title ?? raw.events?.[0]?.title ?? null,
+    eventSlug: event?.slug ?? raw.events?.[0]?.slug ?? null,
+    eventImage: event?.icon ?? event?.image ?? raw.events?.[0]?.icon ?? raw.events?.[0]?.image ?? '',
+    eventVolume: numeric(event?.volume ?? raw.events?.[0]?.volume),
+    eventVolume24h: numeric(event?.volume24hr ?? raw.events?.[0]?.volume24hr),
+    eventLiquidity: numeric(event?.liquidity ?? raw.events?.[0]?.liquidity),
+    groupItemTitle: raw.groupItemTitle ?? null,
     slug: raw.slug ?? '',
     question: raw.question ?? raw.title ?? event?.title ?? 'Untitled market',
     description: raw.description ?? '',
@@ -175,4 +189,16 @@ export async function getMarketsByEventId(eventId: string): Promise<Market[]> {
   return (event.markets ?? [])
     .map((market) => normalizeMarket(market, event))
     .filter(Boolean) as Market[];
+}
+
+export async function getPriceHistory(tokenId: string, interval: string): Promise<import('./types').PricePoint[]> {
+  const allowed = new Set(['1d', '1w', '1m', 'max']);
+  const range = allowed.has(interval) ? interval : '1m';
+  const fidelity = range === '1d' ? '15' : range === '1w' ? '60' : range === '1m' ? '240' : '720';
+  const response = await fetch(`https://clob.polymarket.com/prices-history?market=${encodeURIComponent(tokenId)}&interval=${range}&fidelity=${fidelity}`, { cache: 'no-store' });
+  if (!response.ok) throw new Error('Unable to load price history');
+  const payload = await response.json() as { history?: Array<{ t?: number; p?: number }> };
+  return (payload.history ?? []).flatMap((point) => Number.isFinite(point.t) && Number.isFinite(point.p)
+    ? [{ timestamp: point.t as number, price: Math.max(0, Math.min(1, point.p as number)) }]
+    : []);
 }

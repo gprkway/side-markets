@@ -7,6 +7,13 @@ export type Market = {
   id: string;
   conditionId: string;
   eventId: string | null;
+  eventTitle: string | null;
+  eventSlug: string | null;
+  eventImage: string;
+  eventVolume: number;
+  eventVolume24h: number;
+  eventLiquidity: number;
+  groupItemTitle: string | null;
   slug: string;
   question: string;
   description: string;
@@ -22,3 +29,5 @@ export type Market = {
   outcomes: Outcome[];
   source: 'polymarket';
 };
+
+export type PricePoint = { timestamp: number; price: number };

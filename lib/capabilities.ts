@@ -218,11 +218,16 @@ export const SIDE_CAPABILITIES: SideCapability[] = [
   },
   {
     id: 'compare_related_markets', label: 'Compare related markets', category: 'shared_research', actor: 'agent',
-    description: 'Compare exact event siblings or an explicit selected set while preserving the source thesis.',
-    examplePrompts: [prompt('compare_siblings', 'Compare the exact sibling contracts for this event.')],
+    description: 'Compare exact event siblings or an explicit selected set, then research their rules and observed price structure.',
+    examplePrompts: [
+      prompt('compare_siblings', 'Compare the exact sibling contracts for this event.'),
+      prompt('same_bet', 'Are these actually the same bet?', ['market_comparison']),
+      prompt('compare_rules', 'Compare the resolution rules.', ['market_comparison']),
+      prompt('price_difference', 'Why are these priced differently?', ['market_comparison']),
+    ],
     contexts: ['trader_comparison', 'market_comparison'], highlightContexts: ['trader_comparison', 'market_comparison'],
     requirements: [requires('site_tools'), requires('clear_comparison_selection', 'Clear the selected cells to compare related contracts.')],
-    effects: ['Recompiles the same research desk into a factual market comparison.'], confirmation: 'none', limitations: ['Only identical Polymarket event IDs are labeled exact event siblings.'],
+    effects: ['Recompiles the same research desk into a factual market comparison and can render a validated Codex interpretation.'], confirmation: 'none', limitations: ['Only identical Polymarket event IDs are labeled exact event siblings.', 'Relationship labels are Codex interpretations, not deterministic arbitrage claims.'],
     relatedToolNames: ['get_current_research_set', 'compose_market_comparison', 'compose_trader_comparison'],
   },
   {

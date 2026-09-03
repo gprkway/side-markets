@@ -45,7 +45,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import type { Market } from '@/lib/markets/types';
+import type { Market, PricePoint } from '@/lib/markets/types';
 import type { MarketFeed } from '@/lib/markets/feed';
 import type { Holder, TraderProfile } from '@/lib/traders/types';
 import type { MarketComment } from '@/lib/comments/types';
@@ -98,7 +98,7 @@ type AgentAction = { id: number; message: string };
 type DrawerMode = 'market' | 'holders' | 'comments' | 'trader';
 type ToolContext = 'root' | 'workspace' | 'market' | 'holders' | 'comments' | 'trader' | 'watch';
 type MutationResult = Record<string, unknown> & { ui_changed?: boolean };
-type ResearchObjective = 'survey' | 'compare' | 'explain_relationship';
+type ResearchObjective = 'survey' | 'compare' | 'explain_relationship' | 'compare_market_relationship' | 'compare_market_rules';
 type ResearchLaneName = 'market' | 'holders' | 'positions' | 'shared' | 'siblings' | 'comments';
 type ResearchLaneStatus = 'queued' | 'loading' | 'complete' | 'unavailable' | 'failed' | 'cancelled';
 type ResearchLaneState = { status: ResearchLaneStatus; count?: number; detail?: string };
@@ -309,7 +309,7 @@ function MarketCard({
             <span>{market.category}</span>
           </div>
         </div>
-        <h2>{market.question}</h2>
+        <h2>{market.groupItemTitle || market.question}</h2>
         <div className="probability-row">
           <strong>{formatProbability(market.outcomes[0]?.probability ?? 0)}</strong>
           <span>{market.outcomes[0]?.label ?? 'Yes'}</span>
@@ -327,6 +327,39 @@ function MarketCard({
       </button>
     </article>
   );
+}
+
+function EventCard({ markets, selectedIds, onOpen, onToggleSelect }: {
+  markets: Market[];
+  selectedIds: string[];
+  onOpen: (market: Market) => void;
+  onToggleSelect: (marketId: string) => void;
+}) {
+  const ranked = [...markets].sort((a, b) => (b.outcomes[0]?.probability ?? 0) - (a.outcomes[0]?.probability ?? 0));
+  const first = ranked[0];
+  const volume24h = Math.max(first.eventVolume24h || 0, markets.reduce((sum, market) => sum + market.volume24h, 0));
+  const liquidity = Math.max(first.eventLiquidity || 0, markets.reduce((sum, market) => sum + market.liquidity, 0));
+  return <article className="market-card event-card">
+    <header><div className="market-identity">{first.eventImage || first.image ? <img src={first.eventImage || first.image} alt="" /> : <span className="market-fallback">S</span>}<span>EVENT · {first.category}</span></div><strong>{first.eventTitle || first.question}</strong></header>
+    <div className="event-contracts">
+      {ranked.slice(0, 5).map((market) => {
+        const selected = selectedIds.includes(market.id);
+        return <div className={selected ? 'selected' : ''} key={market.conditionId}>
+          <button className="event-contract-open" onClick={() => onOpen(market)}><span>{market.groupItemTitle || market.question}</span><b>{formatProbability(market.outcomes[0]?.probability ?? 0)}</b><small className={market.priceChange24h > 0 ? 'positive' : market.priceChange24h < 0 ? 'negative' : ''}>{formatMovement(market.priceChange24h)}</small></button>
+          <button className="event-contract-select" onClick={() => onToggleSelect(market.id)} aria-pressed={selected} aria-label={`${selected ? 'Deselect' : 'Select'} ${market.groupItemTitle || market.question}`}>{selected ? <Check /> : <Plus />}</button>
+        </div>;
+      })}
+    </div>
+    <footer><span>{compactMoney.format(volume24h)} today</span><span>{liquidity > 0 ? `${compactMoney.format(liquidity)} liquidity` : 'Liquidity unavailable'}</span><span>{markets.length} visible contracts</span></footer>
+  </article>;
+}
+
+function PriceHistoryChart({ points }: { points: PricePoint[] }) {
+  if (points.length < 2) return <div className="history-empty">Price history unavailable for this range.</div>;
+  const width = 640, height = 150;
+  const path = points.map((point, index) => `${(index / (points.length - 1)) * width},${height - point.price * height}`).join(' ');
+  const latest = points.at(-1)?.price ?? 0;
+  return <div className="history-chart"><svg viewBox={`0 0 ${width} ${height}`} aria-label={`Real Polymarket price history ending at ${formatProbability(latest)}`} preserveAspectRatio="none"><title>Real Polymarket price history</title><polyline points={path} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" /></svg><span>0%</span><span>100%</span></div>;
 }
 
 function TraderComparisonDesk({
@@ -515,14 +548,18 @@ function MarketComparisonDesk({
   profiles,
   holders,
   linkedWatch,
+  researchRun,
   onOpenMarket,
+  onFindingAction,
 }: {
   context: ResearchContext;
   markets: Market[];
   profiles: TraderProfile[];
   holders: Record<string, Holder[]>;
   linkedWatch: TraderWatch | null;
+  researchRun: ResearchRunState | null;
   onOpenMarket: (conditionId: string) => void;
+  onFindingAction: (findingId: string, action: 'pin' | 'reject' | 'restore') => void;
 }) {
   const sourceHolders = new Set((holders[context.thesisConditionId] ?? []).map((holder) => holder.wallet.toLowerCase()));
   return <section className="live-desk market-comparison">
@@ -545,6 +582,11 @@ function MarketComparisonDesk({
         </button>;
       })}
     </div>
+    {(researchRun || context.findings.some((finding) => finding.status !== 'rejected')) && <section id="relationship-research" className="market-relationship-research">
+      <header><small>SHARED RESEARCH SET</small><strong>MARKET RELATIONSHIP</strong><span>REV {context.revision}</span></header>
+      {researchRun && <div className={`research-progress ${researchRun.status}`}><div className="research-progress-title"><span>{researchRun.status === 'running' ? 'RESEARCHING SELECTED CONTRACTS' : 'MARKET RELATIONSHIP RESEARCH'}</span><b>{researchRun.status}</b></div><div className="research-lanes">{(Object.entries(researchRun.lanes) as [ResearchLaneName, ResearchLaneState][]).map(([name, lane]) => <div key={name}><span>{researchLaneLabel[name]}</span><b className={lane.status}>{lane.status === 'complete' ? <Check /> : lane.status === 'loading' || lane.status === 'queued' ? <LoaderCircle className={lane.status === 'loading' ? 'spin' : ''} /> : lane.status === 'unavailable' ? '—' : '!'}</b></div>)}</div></div>}
+      <div className="research-findings">{context.findings.filter((finding) => finding.status !== 'rejected').map((finding) => <article className={`research-finding ${finding.status}`} key={finding.id}><header><span><Sparkles /> CODEX INTERPRETATION</span>{finding.status === 'pinned' && <b><Pin /> PINNED BY YOU</b>}</header><h3>{finding.title}</h3><p>{finding.summary}</p><footer>{finding.status !== 'pinned' && <button onClick={() => onFindingAction(finding.id, 'pin')}><Pin /> Pin</button>}<button onClick={() => onFindingAction(finding.id, 'reject')}><X /> Reject</button></footer></article>)}</div>
+    </section>}
   </section>;
 }
 
@@ -553,6 +595,10 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   const [query, setQuery] = useState('');
   const [activeQuery, setActiveQuery] = useState(initialFeed.query);
   const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
+  const [eventMarkets, setEventMarkets] = useState<Market[]>([]);
+  const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
+  const [historyRange, setHistoryRange] = useState<'1d' | '1w' | '1m' | 'max'>('1m');
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [agentConnected, setAgentConnected] = useState(false);
@@ -663,6 +709,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     [currentWatchId, watches],
   );
   const hasSelectedResearchCells = Boolean(researchContext?.selectedCells.length);
+  const hasMarketResearchSelection = Boolean(researchContext?.mode === 'market_comparison' && researchContext.marketConditionIds.length >= 2);
   const hasLinkedResearchWatch = Boolean(currentWatch && researchContext?.linkedWatchId === currentWatch.id);
   const linkedResearchWatchHasMatches = Boolean(hasLinkedResearchWatch && currentWatch?.matches.length);
   const comparisonProfiles = useMemo(
@@ -914,6 +961,31 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     const timer = window.setInterval(updateFreshness, 60000);
     return () => window.clearInterval(timer);
   }, [feedMeta.fetchedAt]);
+
+  useEffect(() => {
+    if (!selectedMarket) {
+      queueMicrotask(() => { setEventMarkets([]); setPriceHistory([]); });
+      return;
+    }
+    const controller = new AbortController();
+    queueMicrotask(() => setHistoryLoading(true));
+    const eventRequest = selectedMarket.eventId
+      ? fetch(`/api/markets?event=${encodeURIComponent(selectedMarket.eventId)}`, { signal: controller.signal })
+        .then((response) => response.ok ? response.json() as Promise<{ markets: Market[] }> : { markets: [] })
+      : Promise.resolve({ markets: [selectedMarket] });
+    const tokenId = selectedMarket.tokenIds[0];
+    const historyRequest = tokenId
+      ? fetch(`/api/markets?history_token=${encodeURIComponent(tokenId)}&interval=${historyRange}`, { signal: controller.signal })
+        .then((response) => response.ok ? response.json() as Promise<{ history: PricePoint[] }> : { history: [] })
+      : Promise.resolve({ history: [] });
+    void Promise.allSettled([eventRequest, historyRequest]).then(([eventResult, historyResult]) => {
+      if (controller.signal.aborted) return;
+      setEventMarkets(eventResult.status === 'fulfilled' ? eventResult.value.markets : []);
+      setPriceHistory(historyResult.status === 'fulfilled' ? historyResult.value.history : []);
+      setHistoryLoading(false);
+    });
+    return () => controller.abort();
+  }, [historyRange, selectedMarket]);
 
   const openMarketById = useCallback((id: string) => {
     const market = marketsRef.current.find((candidate) => candidate.id === id);
@@ -1761,8 +1833,8 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
   }, [availableWatchTraders, commitMotion, composedView, researchContext, saveComposedView, selectedMarket, selectedMarketIds]);
 
   const composeMarketComparison = useCallback(async (input: Record<string, unknown>) => {
-    if (!researchContext) return { error: 'A trader comparison must be open first.', ui_changed: false };
-    if (Array.isArray(input.trader_wallets)) {
+    if (!composedView) return { error: 'A composed workspace or comparison must be open first.', ui_changed: false };
+    if (researchContext && Array.isArray(input.trader_wallets)) {
       const requestedWallets = [...new Set(input.trader_wallets.map(String).map((wallet) => wallet.toLowerCase()))];
       if (requestedWallets.length !== researchContext.traderWallets.length
         || !requestedWallets.every((wallet) => researchContext.traderWallets.some((candidate) => candidate.toLowerCase() === wallet))) {
@@ -1772,12 +1844,12 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     const basis = input.comparison_basis === 'selected_comparison_set'
       ? 'selected_comparison_set' as MarketComparisonBasis
       : 'exact_event_siblings' as MarketComparisonBasis;
-    const anchorConditionId = typeof input.anchor_condition_id === 'string' && input.anchor_condition_id
-      ? input.anchor_condition_id
-      : researchContext.thesisConditionId;
     const requestedIds = Array.isArray(input.condition_ids)
       ? [...new Set(input.condition_ids.map(String))].slice(0, 6)
       : [];
+    const anchorConditionId = typeof input.anchor_condition_id === 'string' && input.anchor_condition_id
+      ? input.anchor_condition_id
+      : researchContext?.thesisConditionId ?? requestedIds[0] ?? '';
     if (basis === 'selected_comparison_set' && (requestedIds.length < 2 || requestedIds.length > 6)) {
       return { error: 'A selected comparison set requires 2 to 6 explicit condition IDs.', ui_changed: false };
     }
@@ -1804,21 +1876,47 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       }
       const unique = [...new Map(compared.map((market) => [market.conditionId, market])).values()].slice(0, 6);
       if (unique.length < 2) return { error: 'Fewer than two live comparable markets were available.', ui_changed: false };
+      const thesis = unique.find((market) => market.conditionId === anchorConditionId) ?? unique[0];
+      const now = new Date().toISOString();
+      const baseContext: ResearchContext = researchContext ?? {
+        comparisonId: composedView.id,
+        researchSetId: composedView.id,
+        revision: 0,
+        mode: 'market_comparison',
+        thesisMarketId: thesis.id,
+        thesisConditionId: thesis.conditionId,
+        thesisEventId: thesis.eventId,
+        thesisQuestion: thesis.eventTitle || thesis.question,
+        thesisProbability: thesis.outcomes[0]?.probability ?? 0,
+        thesisPriceChange24h: thesis.priceChange24h,
+        thesisVolume24h: thesis.volume24h,
+        traderWallets: [],
+        primaryTraderWallet: null,
+        minimumPositionValue: 0,
+        excludeSports: false,
+        focus: 'all',
+        marketConditionIds: [],
+        marketComparisonBasis: null,
+        linkedWatchId: null,
+        linkedWatchIds: [],
+        selectedCells: [],
+        findings: [],
+        updatedAt: now,
+      };
       const holderEntries = await Promise.all(unique.map(async (market) => {
         const response = await fetch(`/api/traders?market=${encodeURIComponent(market.conditionId)}`);
         const payload = response.ok ? await response.json() as { holders: Holder[] } : { holders: [] };
         return [market.conditionId, payload.holders] as const;
       }));
-      if (!holderEntries.some(([conditionId]) => conditionId === researchContext.thesisConditionId)) {
-        const sourceResponse = await fetch(`/api/traders?market=${encodeURIComponent(researchContext.thesisConditionId)}`);
+      if (!holderEntries.some(([conditionId]) => conditionId === baseContext.thesisConditionId)) {
+        const sourceResponse = await fetch(`/api/traders?market=${encodeURIComponent(baseContext.thesisConditionId)}`);
         if (sourceResponse.ok) {
           const sourcePayload = await sourceResponse.json() as { holders: Holder[] };
-          holderEntries.push([researchContext.thesisConditionId, sourcePayload.holders] as const);
+          holderEntries.push([baseContext.thesisConditionId, sourcePayload.holders] as const);
         }
       }
-      const now = new Date().toISOString();
       const context: ResearchContext = {
-        ...researchContext,
+        ...baseContext,
         mode: 'market_comparison',
         marketConditionIds: unique.map((market) => market.conditionId),
         marketComparisonBasis: basis,
@@ -1869,6 +1967,8 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       thesisConditionId: normalized.thesisConditionId,
       selectedTraderWallets: normalized.traderWallets,
       selectedCells: normalized.selectedCells,
+      selectedMarketConditionIds: normalized.mode === 'market_comparison' ? normalized.marketConditionIds : [],
+      comparisonBasis: normalized.marketComparisonBasis,
       filters: {
         minimumPositionValue: normalized.minimumPositionValue,
         excludeSports: normalized.excludeSports,
@@ -1891,8 +1991,8 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     executionSignal?: AbortSignal,
   ): Promise<MutationResult> => {
     const context = researchContextRef.current;
-    if (!context || context.mode !== 'trader_comparison') {
-      return { error: 'Open a trader comparison before researching selected cells.', ui_changed: false };
+    if (!context) {
+      return { error: 'Open a research comparison before researching a selection.', ui_changed: false };
     }
     const snapshot = normalizeResearchContext(context);
     if (String(input.research_set_id) !== snapshot.researchSetId) {
@@ -1901,10 +2001,40 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     if (Number(input.expected_revision) !== snapshot.revision) {
       return { error: 'research_set_changed', current_research_set_id: snapshot.researchSetId, current_revision: snapshot.revision, ui_changed: false };
     }
-    const objective = ['survey', 'compare', 'explain_relationship'].includes(String(input.objective))
+    const objective = ['survey', 'compare', 'explain_relationship', 'compare_market_relationship', 'compare_market_rules'].includes(String(input.objective))
       ? input.objective as ResearchObjective
       : 'explain_relationship';
     const selectedCells = snapshot.selectedCells.map((cell) => ({ ...cell }));
+    if (snapshot.mode === 'market_comparison') {
+      if (!['compare_market_relationship', 'compare_market_rules'].includes(objective) || snapshot.marketConditionIds.length < 2) {
+        return { error: 'Choose market relationship or rules research with at least two compared markets.', ui_changed: false };
+      }
+      researchAbortRef.current?.abort();
+      const controller = new AbortController();
+      researchAbortRef.current = controller;
+      executionSignal?.addEventListener('abort', () => controller.abort(), { once: true });
+      const runId = crypto.randomUUID();
+      const run: ResearchRunState = { runId, researchSetId: snapshot.researchSetId, revision: snapshot.revision, objective, status: 'running', selectedCells: [], lanes: { market: { status: 'loading' }, siblings: { status: 'queued' } } };
+      researchRunRef.current = run; setResearchRun(run); setResearchCache(null);
+      const ids = snapshot.marketConditionIds.slice(0, 6);
+      const settled = await Promise.allSettled(ids.map(async (conditionId) => {
+        const existing = [...marketsRef.current, ...comparisonMarkets].find((market) => market.conditionId === conditionId);
+        if (existing) return existing;
+        const response = await fetch(`/api/markets?condition=${encodeURIComponent(conditionId)}`, { signal: controller.signal });
+        if (!response.ok) throw new Error('Market lookup failed');
+        return (await response.json() as { market: Market }).market;
+      }));
+      const current = researchContextRef.current;
+      if (controller.signal.aborted || current?.researchSetId !== snapshot.researchSetId || current.revision !== snapshot.revision) return { error: 'research_set_changed', run_id: runId, ui_changed: true };
+      const loaded = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+      const records = Object.fromEntries(loaded.map((market) => [market.conditionId, market]));
+      const partial = loaded.length !== ids.length;
+      const finalRun: ResearchRunState = { ...run, status: partial ? 'partial' : 'complete', lanes: { market: { status: partial ? 'failed' : 'complete', count: loaded.length }, siblings: { status: loaded.some((market) => market.eventId) ? 'complete' : 'unavailable', count: new Set(loaded.map((market) => market.eventId).filter(Boolean)).size } } };
+      researchRunRef.current = finalRun; setResearchRun(finalRun);
+      const cache: ResearchRunCache = { runId, researchSetId: snapshot.researchSetId, revision: snapshot.revision, selectedCells: [], markets: records, profiles: {}, rows: [] };
+      researchCacheRef.current = cache; setResearchCache(cache);
+      return { research_set_id: snapshot.researchSetId, run_id: runId, revision: snapshot.revision, objective, markets: loaded.map((market) => ({ condition_id: market.conditionId, event_id: market.eventId, event_title: market.eventTitle, contract_label: market.groupItemTitle, question: market.question, resolution_rules: market.description, deadline: market.endDate, probability: market.outcomes[0]?.probability ?? 0, movement_24h: market.priceChange24h, volume_24h: market.volume24h, liquidity: market.liquidity })), same_event: loaded.every((market) => market.eventId && market.eventId === loaded[0]?.eventId), ui_changed: true };
+    }
     if (objective === 'explain_relationship') {
       if (selectedCells.length < 2 || new Set(selectedCells.map((cell) => cell.wallet.toLowerCase())).size < 2) {
         return { error: 'Select at least two position cells from different traders.', ui_changed: false };
@@ -2110,7 +2240,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       failed_lanes: Object.entries(researchRunRef.current?.lanes ?? {}).filter(([, lane]) => lane.status === 'failed').map(([name]) => name),
       ui_changed: true,
     };
-  }, []);
+  }, [comparisonMarkets]);
 
   const renderResearchFindings = useCallback((input: Record<string, unknown>): MutationResult => {
     const context = researchContextRef.current;
@@ -2433,8 +2563,20 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       ),
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
+    if (selectedMarketIds.length >= 2) void modelContext.registerTool({
+      name: 'compose_market_comparison',
+      title: 'Compare the selected market contracts',
+      description: 'Transform the current workspace into a persistent comparison using 2 to 6 exact selected condition IDs. Use this before researching whether the contracts express the same thesis.',
+      inputSchema: { type: 'object', properties: {
+        anchor_condition_id: { type: 'string' },
+        comparison_basis: { type: 'string', enum: ['exact_event_siblings', 'selected_comparison_set'] },
+        condition_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
+      }, required: ['anchor_condition_id', 'comparison_basis', 'condition_ids'], additionalProperties: false },
+      execute: (input) => runAgentMutation(() => composeMarketComparison(input), (result) => `${Number(result.market_count) || 0} contracts compared`),
+      annotations: { readOnlyHint: false },
+    }, { signal: controller.signal });
     return () => controller.abort();
-  }, [composedView, markets, researchContext, runAgentMutation, selectedMarketIds, toolContext, updateMarketView]);
+  }, [composeMarketComparison, composedView, markets, researchContext, runAgentMutation, selectedMarketIds, toolContext, updateMarketView]);
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
@@ -2690,7 +2832,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         ?? { error: 'Shared research state is not ready.', ui_changed: false },
       annotations: { readOnlyHint: true },
     });
-    if (!hasSelectedResearchCells) {
+    if (!hasSelectedResearchCells && !hasMarketResearchSelection) {
       void register({
         name: 'compose_trader_comparison',
         title: 'Refine or restore this trader comparison',
@@ -2734,12 +2876,12 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       void register({
         name: 'research_current_selection',
         title: 'Research the human’s exact selection',
-        description: 'Research the exact cells in the current shared research set with bounded live Side data. Validates the set ID and revision, shows real lane progress in the desk, and returns only structured facts and IDs.',
+        description: 'Research the exact selected trader cells or compared market contracts with bounded live Side data. Market relationship research returns exact rules, deadlines, event IDs, and observed metrics.',
         inputSchema: {
           type: 'object', properties: {
             research_set_id: { type: 'string' },
             expected_revision: { type: 'number', minimum: 0 },
-            objective: { type: 'string', enum: ['survey', 'compare', 'explain_relationship'] },
+            objective: { type: 'string', enum: ['survey', 'compare', 'explain_relationship', 'compare_market_relationship', 'compare_market_rules'] },
             lanes: { type: 'array', uniqueItems: true, items: { type: 'string', enum: ['market', 'holders', 'positions', 'siblings', 'comments'] } },
           }, required: ['research_set_id', 'expected_revision', 'objective'], additionalProperties: false,
         },
@@ -2885,7 +3027,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       });
     }
     return () => controller.abort();
-  }, [hasLinkedResearchWatch, hasSelectedResearchCells, linkedResearchWatchHasMatches, runAgentMutation, toolContext]);
+  }, [hasLinkedResearchWatch, hasMarketResearchSelection, hasSelectedResearchCells, linkedResearchWatchHasMatches, runAgentMutation, toolContext]);
 
   useEffect(() => {
     const modelContext = document.modelContext ?? navigator.modelContext;
@@ -3057,6 +3199,14 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       : watchlistOnly ? markets.filter((market) => watchlist.includes(market.id)) : markets,
     [composedView, markets, watchlist, watchlistOnly],
   );
+  const visibleMarketGroups = useMemo(() => {
+    const groups = new Map<string, Market[]>();
+    visibleMarkets.forEach((market) => {
+      const key = market.eventId ? `event:${market.eventId}` : `market:${market.id}`;
+      groups.set(key, [...(groups.get(key) ?? []), market]);
+    });
+    return [...groups.values()];
+  }, [visibleMarkets]);
   const visibleComments = useMemo(
     () => positionedCommentsOnly ? comments.filter((comment) => comment.position) : comments,
     [comments, positionedCommentsOnly],
@@ -3225,14 +3375,18 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             profiles={comparisonProfiles}
             holders={comparisonHolders}
             linkedWatch={linkedWatch}
+            researchRun={researchRun}
             onOpenMarket={(conditionId) => void openMarketByConditionId(conditionId)}
+            onFindingAction={updateFindingStatus}
           />
         )}
         {!researchContext && (!composedView || visibleMarkets.length > 0) && (
           <section key={composedView ? `${composedView.id}-markets-${composedView.updatedAt}` : `feed-${activeQuery}`} className={composedView ? 'composed-section composed-section-markets' : undefined}>
             {composedView && <div className="composed-section-heading"><span>{composedView.sections.find((section) => section.type === 'markets')?.title ?? 'Markets'}</span><small>{visibleMarkets.length} LIVE</small></div>}
             <div className={`market-grid ${loading ? 'is-loading' : ''}`} aria-busy={loading}>
-              {visibleMarkets.map((market) => <MarketCard key={market.id} market={market} selected={selectedMarketIds.includes(market.id)} onToggleSelect={toggleMarketSelection} onOpen={(nextMarket) => { void openMarketById(nextMarket.id); }} />)}
+              {visibleMarketGroups.map((group) => group.length > 1
+                ? <EventCard key={`event-${group[0].eventId}`} markets={group} selectedIds={selectedMarketIds} onToggleSelect={toggleMarketSelection} onOpen={(nextMarket) => { void openMarketById(nextMarket.id); }} />
+                : <MarketCard key={group[0].id} market={group[0]} selected={selectedMarketIds.includes(group[0].id)} onToggleSelect={toggleMarketSelection} onOpen={(nextMarket) => { void openMarketById(nextMarket.id); }} />)}
             </div>
           </section>
         )}
@@ -3276,7 +3430,8 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             <div className={`drawer-stage drawer-stage-${drawerMode}`}>
               <SheetHeader className="drawer-header">
                 <div className="drawer-kicker"><span>{selectedMarket.category}</span><span>•</span><span>POLYMARKET</span><span className="drawer-live">LIVE</span><button type="button" className="drawer-guide-link" onClick={openAgentGuide}><Bot /> With Codex</button></div>
-                <SheetTitle>{selectedMarket.question}</SheetTitle>
+                {selectedMarket.eventTitle && selectedMarket.eventTitle !== selectedMarket.question && <div className="drawer-event-title">{selectedMarket.eventTitle}</div>}
+                <SheetTitle>{selectedMarket.groupItemTitle || selectedMarket.question}</SheetTitle>
                 <SheetDescription>{selectedMarket.description || 'Live binary prediction market.'}</SheetDescription>
                 <Button className={`watch-market-button state-button ${watchlist.includes(selectedMarket.id) ? 'is-active' : ''}`} variant={watchlist.includes(selectedMarket.id) ? 'secondary' : 'outline'} onClick={() => toggleWatchlist(selectedMarket.id)}>
                   <span>
@@ -3303,6 +3458,15 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
                   <div><CircleDollarSign /><span>Total volume</span><strong>{compactMoney.format(selectedMarket.volume)}</strong></div>
                   <div><TrendingUp /><span>Liquidity</span><strong>{compactMoney.format(selectedMarket.liquidity)}</strong></div>
                 </div>
+                <section className="price-history-panel">
+                  <div className="section-label"><span>REAL PRICE HISTORY</span><span>POLYMARKET CLOB</span></div>
+                  <div className="history-ranges">{(['1d', '1w', '1m', 'max'] as const).map((range) => <button className={historyRange === range ? 'active' : ''} onClick={() => setHistoryRange(range)} key={range}>{range === 'max' ? 'ALL' : range.toUpperCase()}</button>)}</div>
+                  {historyLoading ? <div className="history-empty"><LoaderCircle className="spin" /> Loading actual trades…</div> : <PriceHistoryChart points={priceHistory} />}
+                </section>
+                {eventMarkets.length > 1 && <section className="event-siblings">
+                  <div className="section-label"><span>EVENT CONTRACTS</span><span>{eventMarkets.length} EXACT SIBLINGS</span></div>
+                  <div>{[...eventMarkets].sort((a, b) => (b.outcomes[0]?.probability ?? 0) - (a.outcomes[0]?.probability ?? 0)).slice(0, 12).map((market) => <button className={market.conditionId === selectedMarket.conditionId ? 'active' : ''} key={market.conditionId} onClick={() => void openMarketByConditionId(market.conditionId)}><span>{market.groupItemTitle || market.question}</span><b>{formatProbability(market.outcomes[0]?.probability ?? 0)}</b><small>{formatMovement(market.priceChange24h)}</small></button>)}</div>
+                </section>}
                 <button className="trader-preview" onClick={() => void loadHolders()} disabled={holdersLoading}>
                   <span className="trader-icon">{holdersLoading ? <LoaderCircle className="spin" /> : <Users />}</span>
                   <span><strong>See who’s in this trade</strong><small>Notable holders and their other positions</small></span><ArrowUpRight />

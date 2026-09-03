@@ -5,6 +5,9 @@ Side is a WebMCP-native prediction-market browser designed for a human and their
 ## Working vertical slice
 
 - Live Polymarket discovery feed normalized behind a provider adapter
+- Exact Polymarket event identity, human-readable contract labels, and event-aware feed cards
+- Real CLOB price history and exact event siblings in the market drawer
+- Market-relationship research using exact condition/event IDs, live metrics, deadlines, and resolution rules
 - Search and category filtering
 - Large market detail drawer
 - Real notable holders split by outcome

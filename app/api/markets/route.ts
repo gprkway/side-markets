@@ -1,5 +1,5 @@
 import { getMarketFeed } from '@/lib/markets/feed';
-import { getMarketByConditionId, getMarketsByEventId } from '@/lib/markets/polymarket';
+import { getMarketByConditionId, getMarketsByEventId, getPriceHistory } from '@/lib/markets/polymarket';
 
 const conditionPattern = /^0x[a-fA-F0-9]{64}$/;
 
@@ -8,7 +8,13 @@ export async function GET(request: Request) {
   const conditionId = params.get('condition')?.trim() ?? '';
   const query = params.get('q')?.trim() ?? '';
   const eventId = params.get('event')?.trim() ?? '';
+  const historyToken = params.get('history_token')?.trim() ?? '';
+  const interval = params.get('interval')?.trim() ?? '1m';
   try {
+    if (historyToken) {
+      if (!/^\d+$/.test(historyToken)) return Response.json({ error: 'A valid token ID is required.' }, { status: 400 });
+      return Response.json({ history: await getPriceHistory(historyToken, interval) });
+    }
     if (conditionId) {
       if (!conditionPattern.test(conditionId)) {
         return Response.json({ error: 'A valid condition ID is required.' }, { status: 400 });
