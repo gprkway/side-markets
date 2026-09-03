@@ -2,6 +2,8 @@
 
 Side is a WebMCP-native prediction-market browser designed for a human and their existing agent to use together. It renders live Polymarket data in a focused trading interface and exposes page tools that visibly manipulate the same UI state.
 
+Natural-language market research does not require manual clicking: composed workspaces return compact exact market/condition/event identities, and `compose_market_comparison` accepts explicit workspace market IDs. Human selection remains an equivalent visual shortcut. Activity-ranked results are labeled as candidates—not claims of undervaluation—until rule- and evidence-backed research is rendered separately as a Codex interpretation.
+
 ## Working vertical slice
 
 - Live Polymarket discovery feed normalized behind a provider adapter

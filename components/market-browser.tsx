@@ -46,6 +46,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import type { Market, PricePoint } from '@/lib/markets/types';
+import { compactResearchCandidates, resolveComparisonConditionIds } from '@/lib/markets/research';
 import type { MarketFeed } from '@/lib/markets/feed';
 import type { Holder, TraderProfile } from '@/lib/traders/types';
 import type { MarketComment } from '@/lib/comments/types';
@@ -1563,7 +1564,16 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         setDrawerMode('market');
         saveComposedView(view);
       });
-      return { viewId, title, marketCount: candidates.length, traderCount: view.traders.length, saved: true, ui_changed: true };
+      return {
+        viewId,
+        title,
+        marketCount: candidates.length,
+        traderCount: view.traders.length,
+        candidate_markets: compactResearchCandidates(view.marketIds, candidates),
+        interpretation_boundary: 'These are research candidates selected by explicit activity filters, not claims that any market is undervalued or mispriced.',
+        saved: true,
+        ui_changed: true,
+      };
     } catch {
       setError('Could not assemble this live research view.');
       return { error: 'Live composition failed.', ui_changed: false };
@@ -1844,9 +1854,14 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     const basis = input.comparison_basis === 'selected_comparison_set'
       ? 'selected_comparison_set' as MarketComparisonBasis
       : 'exact_event_siblings' as MarketComparisonBasis;
-    const requestedIds = Array.isArray(input.condition_ids)
-      ? [...new Set(input.condition_ids.map(String))].slice(0, 6)
-      : [];
+    const requestedMarketIds = Array.isArray(input.market_ids) ? input.market_ids.map(String) : [];
+    const resolvedRequest = resolveComparisonConditionIds({
+      conditionIds: Array.isArray(input.condition_ids) ? input.condition_ids.map(String) : [],
+      marketIds: requestedMarketIds,
+      selectedMarketIds,
+      markets: [...marketsRef.current, ...comparisonMarkets],
+    });
+    const requestedIds = resolvedRequest.conditionIds;
     const anchorConditionId = typeof input.anchor_condition_id === 'string' && input.anchor_condition_id
       ? input.anchor_condition_id
       : researchContext?.thesisConditionId ?? requestedIds[0] ?? '';
@@ -1945,9 +1960,11 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         mode: 'market_comparison',
         comparison_basis: basis,
         condition_ids: unique.map((market) => market.conditionId),
+        markets: compactResearchCandidates(unique.map((market) => market.id), unique),
         market_count: unique.length,
         trader_wallet_count: context.traderWallets.length,
         holder_data_available_count: holderEntries.filter(([, values]) => values.length > 0).length,
+        selection_source: basis === 'exact_event_siblings' ? 'exact_event_siblings' : resolvedRequest.source,
         ui_changed: true,
       };
     } catch {
@@ -1955,12 +1972,16 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
     } finally {
       setComparisonLoading(false);
     }
-  }, [commitMotion, composedView, comparisonMarkets, researchContext, saveComposedView]);
+  }, [commitMotion, composedView, comparisonMarkets, researchContext, saveComposedView, selectedMarketIds]);
 
   const getCurrentResearchSet = useCallback((): MutationResult => {
     const context = researchContextRef.current;
     if (!context) return { error: 'No shared research set is currently open.', ui_changed: false };
     const normalized = normalizeResearchContext(context);
+    const comparedMarkets = normalized.marketConditionIds.flatMap((conditionId) => {
+      const market = marketsRef.current.find((candidate) => candidate.conditionId === conditionId);
+      return market ? [market] : [];
+    });
     return {
       researchSetId: normalized.researchSetId,
       revision: normalized.revision,
@@ -1968,6 +1989,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       selectedTraderWallets: normalized.traderWallets,
       selectedCells: normalized.selectedCells,
       selectedMarketConditionIds: normalized.mode === 'market_comparison' ? normalized.marketConditionIds : [],
+      comparedMarkets: compactResearchCandidates(comparedMarkets.map((market) => market.id), comparedMarkets),
       comparisonBasis: normalized.marketComparisonBasis,
       filters: {
         minimumPositionValue: normalized.minimumPositionValue,
@@ -2536,6 +2558,8 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
         view: composedView,
         selected_market_ids: selectedMarketIds,
         selected_markets: selectedMarketIds.map((id) => markets.find((market) => market.id === id)).filter(Boolean),
+        candidate_markets: compactResearchCandidates(composedView.marketIds, markets),
+        interpretation_boundary: 'Candidate ranking reflects the workspace filters and sort only. It is not evidence that a market is undervalued or mispriced.',
         capabilities: capabilitySnapshotRef.current,
         ui_changed: false,
       }),
@@ -2563,15 +2587,16 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
       ),
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
-    if (selectedMarketIds.length >= 2) void modelContext.registerTool({
+    if (composedView.marketIds.length >= 2 || selectedMarketIds.length >= 2) void modelContext.registerTool({
       name: 'compose_market_comparison',
-      title: 'Compare the selected market contracts',
-      description: 'Transform the current workspace into a persistent comparison using 2 to 6 exact selected condition IDs. Use this before researching whether the contracts express the same thesis.',
+      title: 'Compare explicit workspace markets',
+      description: 'Transform the current workspace into a persistent comparison using 2 to 6 explicit market IDs or condition IDs returned by this workspace. Human-selected markets remain a fallback when IDs are omitted.',
       inputSchema: { type: 'object', properties: {
         anchor_condition_id: { type: 'string' },
         comparison_basis: { type: 'string', enum: ['exact_event_siblings', 'selected_comparison_set'] },
         condition_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
-      }, required: ['anchor_condition_id', 'comparison_basis', 'condition_ids'], additionalProperties: false },
+        market_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string', description: 'Exact market_id from candidate_markets.' } },
+      }, required: ['anchor_condition_id', 'comparison_basis'], additionalProperties: false },
       execute: (input) => runAgentMutation(() => composeMarketComparison(input), (result) => `${Number(result.market_count) || 0} contracts compared`),
       annotations: { readOnlyHint: false },
     }, { signal: controller.signal });
@@ -2862,6 +2887,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
             anchor_condition_id: { type: 'string', description: 'Exact condition ID anchoring the comparison.' },
             comparison_basis: { type: 'string', enum: ['exact_event_siblings', 'selected_comparison_set'] },
             condition_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
+            market_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
             trader_wallets: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'string' } },
           }, required: ['anchor_condition_id', 'comparison_basis'], additionalProperties: false,
         },
@@ -2950,6 +2976,7 @@ export function MarketBrowser({ initialFeed }: { initialFeed: MarketFeed }) {
           anchor_condition_id: { type: 'string' },
           comparison_basis: { type: 'string', enum: ['exact_event_siblings', 'selected_comparison_set'] },
           condition_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
+          market_ids: { type: 'array', minItems: 2, maxItems: 6, items: { type: 'string' } },
         }, required: ['anchor_condition_id', 'comparison_basis'], additionalProperties: false },
         execute: (input) => runAgentMutation(
           () => workspaceActionsRef.current?.composeMarkets(input) ?? Promise.resolve({ error: 'Market comparison is not ready.', ui_changed: false }),
